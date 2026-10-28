@@ -1574,7 +1574,7 @@ async def umute_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await msg.reply_text(
         f"🔊 <b>Unmuted User from Bot</b>\n\n👤 User ID: <code>{target_id}</code>",
         parse_mode="HTML",
-        reply_to_message_id=msg_id
+        reply_to_message_id=msg.message_id
     )
 
 @restricted_command
@@ -1585,7 +1585,7 @@ async def unban_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if not context.args:
-        return await msg.reply_text("❌ Usage: `/unban [user_id]`", parse_mode="Markdown", reply_to_message_id=msg_id)
+        return await msg.reply_text("❌ Usage: `/unban [user_id]`", parse_mode="Markdown", reply_to_message_id=msg.message_id)
 
     try:
         target_id = int(context.args[0])
@@ -1598,7 +1598,7 @@ async def unban_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await msg.reply_text(
         f"🔓 <b>Unbanned User from Bot</b>\n\n👤 User ID: <code>{target_id}</code>",
         parse_mode="HTML",
-        reply_to_message_id=msg_id
+        reply_to_message_id=msg.message_id
     )
 
 @restricted_command
@@ -1609,7 +1609,7 @@ async def check_user_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if not context.args:
-        return await msg.reply_text("❌ Usage: `/check [user_id]`", parse_mode="Markdown", reply_to_message_id=msg_id)
+        return await msg.reply_text("❌ Usage: `/check [user_id]`", parse_mode="Markdown", reply_to_message_id=msg.message_id)
 
     try:
         target_id = int(context.args[0])
@@ -1619,7 +1619,7 @@ async def check_user_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     async with db_pool.acquire() as conn:
         user_row = await conn.fetchrow("SELECT coins, selected_card_id, name FROM users WHERE user_id = $1", target_id)
         if not user_row:
-            return await msg.reply_text(f"❌ User ID <code>{target_id}</code> not found in database.", parse_mode="HTML", reply_to_message_id=msg_id)
+            return await msg.reply_text(f"❌ User ID <code>{target_id}</code> not found in database.", parse_mode="HTML", reply_to_message_id=msg.message_id)
 
         coins = user_row['coins'] or 1000
         selected_card_id = user_row['selected_card_id']
@@ -2642,6 +2642,88 @@ def decode_slot_dice(value):
         total_score += s_score
 
     return symbols, total_score
+
+
+async def run_kslot_task(bot, chat_id, query, user_id, display_name, bet_amount):
+    try:
+        async with db_pool.acquire() as conn:
+            async with conn.transaction():
+                user_row = await conn.fetchrow("SELECT coins FROM users WHERE user_id = $1 FOR UPDATE", user_id)
+                current_coins = user_row['coins'] if user_row else 1000
+
+                if current_coins < bet_amount:
+                    try:
+                        await query.answer(f"❌ Insufficient Kachi balance! Your current balance is <b>{current_coins}</b> Kachi.", show_alert=True)
+                    except Exception:
+                        pass
+                    return
+
+                new_balance_after_bet = current_coins - bet_amount
+                await conn.execute("UPDATE users SET coins = $1 WHERE user_id = $2", new_balance_after_bet, user_id)
+
+        try:
+            await query.edit_message_text(
+                f"🎰 <b>Spinning...</b>\n\n👤 Player: {get_mention(user_id, display_name)}\n🩸 Bet Amount: <b>{bet_amount}</b> Kachi\n\n<i>🎲 Rolling slot animation...</i>",
+                parse_mode="HTML",
+                reply_markup=None
+            )
+        except Exception:
+            pass
+
+        dice_msg = None
+        try:
+            reply_to_id = query.message.reply_to_message.message_id if query.message and query.message.reply_to_message else None
+            dice_msg = await bot.send_dice(chat_id=chat_id, emoji="🎰", reply_to_message_id=reply_to_id)
+        except Exception:
+            try:
+                dice_msg = await bot.send_dice(chat_id=chat_id, emoji="🎰")
+            except Exception:
+                dice_msg = None
+
+        await asyncio.sleep(4)
+
+        dice_val = dice_msg.dice.value if dice_msg and dice_msg.dice else random.randint(1, 64)
+        symbols, score = decode_slot_dice(dice_val)
+
+        if score >= 32:
+            payout = bet_amount * 2
+            result_type = "Win 2x 🏆"
+            net_gain = f"+{bet_amount}"
+        elif score >= 28:
+            payout = int(bet_amount * 1.5)
+            result_type = "Win 1.5x ✨"
+            net_gain = f"+{int(bet_amount * 0.5)}"
+        elif score >= 26:
+            payout = bet_amount
+            result_type = "Draw / Refund 1x 🤝"
+            net_gain = "0"
+        else:
+            payout = 0
+            result_type = "Loss 0x 💔"
+            net_gain = f"-{bet_amount}"
+
+        final_payout_total = payout
+        async with db_pool.acquire() as conn:
+            async with conn.transaction():
+                await conn.execute("UPDATE users SET coins = coins + $1 WHERE user_id = $2", final_payout_total, user_id)
+                updated_user = await conn.fetchrow("SELECT coins FROM users WHERE user_id = $1", user_id)
+                new_balance = updated_user['coins'] if updated_user else new_balance_after_bet + final_payout_total
+
+        sym_str = " | ".join(symbols)
+        result_text = f"""🎰 <b>Kachi Slot Machine Result</b>
+
+👤 Player: {get_mention(user_id, display_name)}
+🎲 Symbols: <b>{sym_str}</b>
+📊 Score: <b>{score}</b>
+🎯 Result: <b>{result_type}</b> ({net_gain} Kachi)
+💰 Current Balance: <b>{new_balance}</b> Kachi ✨"""
+
+        try:
+            await query.edit_message_text(result_text, parse_mode="HTML", reply_markup=None)
+        except Exception:
+            pass
+    finally:
+        pass
 
 
 # --- /kbox Command Implementation ---
@@ -3722,80 +3804,12 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         kslot_cooldowns[user.id] = time.time()
 
         async with db_pool.acquire() as conn:
-            async with conn.transaction():
-                user_row = await conn.fetchrow("SELECT coins, name FROM users WHERE user_id = $1 FOR UPDATE", user.id)
-                current_coins = user_row['coins'] if user_row else 1000
-                display_name = user_row['name'] if user_row else user.first_name
+            user_row = await conn.fetchrow("SELECT name FROM users WHERE user_id = $1", user.id)
+            display_name = user_row['name'] if user_row else user.first_name
 
-                if current_coins < bet_amount:
-                    return await query.answer(f"❌ Insufficient Kachi balance! Your current balance is <b>{current_coins}</b> Kachi.", show_alert=True)
-
-                new_balance_after_bet = current_coins - bet_amount
-                await conn.execute("UPDATE users SET coins = $1 WHERE user_id = $2", new_balance_after_bet, user.id)
-
-        try:
-            await query.edit_message_text(
-                f"🎰 <b>Spinning...</b>\n\n👤 Player: {get_mention(user.id, display_name)}\n🩸 Bet Amount: <b>{bet_amount}</b> Kachi\n\n<i>🎲 Rolling slot animation...</i>",
-                parse_mode="HTML",
-                reply_markup=None
-            )
-        except Exception:
-            pass
-
-        dice_msg = None
-        try:
-            reply_to_id = query.message.reply_to_message.message_id if query.message and query.message.reply_to_message else None
-            dice_msg = await context.bot.send_dice(chat_id=chat_id, emoji="🎰", reply_to_message_id=reply_to_id)
-        except Exception:
-            try:
-                dice_msg = await context.bot.send_dice(chat_id=chat_id, emoji="🎰")
-            except Exception:
-                dice_msg = None
-
-        await asyncio.sleep(4)
-
-        dice_val = dice_msg.dice.value if dice_msg and dice_msg.dice else random.randint(1, 64)
-        symbols, score = decode_slot_dice(dice_val)
-
-        if score >= 32:
-            payout = bet_amount * 2
-            result_type = "Win 2x 🏆"
-            net_gain = f"+{bet_amount}"
-        elif score >= 28:
-            payout = int(bet_amount * 1.75)
-            result_type = "Win 1.5x ✨"
-            net_gain = f"+{int(bet_amount * 0.75)}"
-        elif score >= 26:
-            payout = bet_amount
-            result_type = "Draw / Refund 1x 🤝"
-            net_gain = "0"
-        else:
-            payout = 0
-            result_type = "Loss 0x 💔"
-            net_gain = f"-{bet_amount}"
-
-        final_payout_total = payout
-        async with db_pool.acquire() as conn:
-            async with conn.transaction():
-                await conn.execute("UPDATE users SET coins = coins + $1 WHERE user_id = $2", final_payout_total, user.id)
-                updated_user = await conn.fetchrow("SELECT coins FROM users WHERE user_id = $1", user.id)
-                new_balance = updated_user['coins'] if updated_user else new_balance_after_bet + final_payout_total
-
-        sym_str = " | ".join(symbols)
-        result_text = f"""🎰 <b>Kachi Slot Machine Result</b>
-
-👤 Player: {get_mention(user.id, display_name)}
-🎲 Symbols: <b>{sym_str}</b>
-📊 Score: <b>{score}</b>
-🎯 Result: <b>{result_type}</b> ({net_gain} Kachi)
-💰 Current Balance: <b>{new_balance}</b> Kachi ✨"""
-
-        try:
-            await query.edit_message_text(result_text, parse_mode="HTML", reply_markup=None)
-        except Exception:
-            pass
-
-        return await query.answer("🎯 Slot spin completed!")
+        await query.answer("🎯 Spin started!")
+        asyncio.create_task(run_kslot_task(context.bot, chat_id, query, user.id, display_name, bet_amount))
+        return
     # ----------------------------
 
     if data.startswith("buy_confirm_"):
