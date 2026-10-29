@@ -64,9 +64,9 @@ async def init_db():
     global db_pool, global_default_threshold
     db_pool = await asyncpg.create_pool(
         DATABASE_URL, 
-        min_size=50, 
-        max_size=200, 
-        command_timeout=60
+        min_size=100, 
+        max_size=400, 
+        command_timeout=30
     )
     
     async with db_pool.acquire() as conn:
@@ -358,7 +358,7 @@ async def register_user_group(user, chat, context: ContextTypes.DEFAULT_TYPE = N
 🔗 <b>Link:</b> {invite_link}
 👤 <b>Added By:</b> {adder_text}"""
                     try:
-                        await context.bot.send_message(ADMIN_ID, log_text, parse_mode="HTML", disable_web_page_preview=True)
+                        asyncio.create_task(context.bot.send_message(ADMIN_ID, log_text, parse_mode="HTML", disable_web_page_preview=True))
                     except Exception:
                         pass
 
@@ -753,11 +753,11 @@ async def start_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
                                 await conn.execute("UPDATE users SET referred_by = $1 WHERE user_id = $2", inviter_id, user.id)
                                 await conn.execute("UPDATE users SET referral_count = referral_count + 1, coins = coins + 200 WHERE user_id = $1", inviter_id)
                                 try:
-                                    await context.bot.send_message(
+                                    asyncio.create_task(context.bot.send_message(
                                         inviter_id,
                                         f"🎉 <b>New Referral!</b>\n{get_mention(user.id, user.first_name)} joined using your referral link. You received <b>+200 Kachi</b> 🩸",
                                         parse_mode="HTML"
-                                    )
+                                    ))
                                 except Exception:
                                     pass
             except ValueError:
@@ -1907,13 +1907,13 @@ async def kg_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     prize = prizes[idx]
                     await conn.execute("UPDATE users SET coins = coins + $1 WHERE user_id = $2", prize, winner['user_id'])
                     try:
-                        await context.bot.send_message(
+                        asyncio.create_task(context.bot.send_message(
                             winner['user_id'],
                             f"🏆 <b>Daily KGAME Top Winner!</b>\n\n"
                             f"Congratulations! You ranked #{idx+1} in Daily KGAME Top.\n"
                             f"🎁 Reward: <b>+{prize} Kachi</b> 🩸",
                             parse_mode="HTML"
-                        )
+                        ))
                     except Exception:
                         pass
 
@@ -2095,9 +2095,9 @@ async def add_card_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         try:
             if c_type == "photo":
-                await context.bot.send_photo(chat_id=LOG_CHANNEL_ID, photo=file_id, caption=log_text, parse_mode="HTML")
+                asyncio.create_task(context.bot.send_photo(chat_id=LOG_CHANNEL_ID, photo=file_id, caption=log_text, parse_mode="HTML"))
             else:
-                await context.bot.send_video(chat_id=LOG_CHANNEL_ID, video=file_id, caption=log_text, parse_mode="HTML")
+                asyncio.create_task(context.bot.send_video(chat_id=LOG_CHANNEL_ID, video=file_id, caption=log_text, parse_mode="HTML"))
         except Exception:
             pass
 
@@ -2298,6 +2298,7 @@ async def kshop_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = f"""Hello {user.first_name}
 You can buy the highest-tier 🎀Birthday Special / 📓Raiden / 🦠Kryora / 🎐Yugen / 🧬Shinsei / 🪞 Kiwami rarity cards here"""
 
+    # Ten hoshi Kami ကို မထည့်ဘဲ တောင်းဆိုထားသည့် Rarity များအတိုင်း စီစဉ်ထားသည်
     keyboard = InlineKeyboardMarkup([
         [
             InlineKeyboardButton("🎀 Birthday Special", callback_data=f"kshop_rarity_{user.id}_Birthday Special"),
@@ -2326,20 +2327,21 @@ async def render_kshop_card(query, context, user_id, rarity, index):
     
     price_key = (user_id, card['card_id'])
     if price_key not in kshop_prices:
+        # Kachi Value / Kshop price ranges adjusted to requested rules
         if rarity == 'Birthday Special':
-            kshop_prices[price_key] = random.randint(63000, 77000)
+            kshop_prices[price_key] = random.randint(4000, 6000)
         elif rarity == 'Raiden':
-            kshop_prices[price_key] = random.randint(38000, 54000)
+            kshop_prices[price_key] = random.randint(50000, 69000)
         elif rarity == 'Kryora':
-            kshop_prices[price_key] = random.randint(23000, 31000)
+            kshop_prices[price_key] = random.randint(35000, 44800)
         elif rarity == 'Yugen':
-            kshop_prices[price_key] = random.randint(20000, 28000)
+            kshop_prices[price_key] = random.randint(18000, 28000)
         elif rarity == 'Shinsei':
-            kshop_prices[price_key] = random.randint(12000, 18000)
+            kshop_prices[price_key] = random.randint(9000, 15000)
         elif rarity == 'Kiwami':
-            kshop_prices[price_key] = random.randint(10000, 15000)
+            kshop_prices[price_key] = random.randint(5000, 7300)
         else:
-            kshop_prices[price_key] = random.randint(10000, 15000)
+            kshop_prices[price_key] = random.randint(5000, 7300)
     price = kshop_prices[price_key]
 
     async with db_pool.acquire() as conn:
@@ -2620,7 +2622,7 @@ async def run_klot_task(bot, chat_id, msg_id, user_id, display_name, bet_amount)
 
                 if current_coins < bet_amount:
                     try:
-                        await bot.send_message(chat_id, f"❌ Insufficient Kachi balance! Your current balance is <b>{current_coins}</b> Kachi.", parse_mode="HTML", reply_to_message_id=msg_id)
+                        asyncio.create_task(bot.send_message(chat_id, f"❌ Insufficient Kachi balance! Your current balance is <b>{current_coins}</b> Kachi.", parse_mode="HTML", reply_to_message_id=msg_id))
                     except Exception:
                         pass
                     return
@@ -2648,13 +2650,13 @@ async def run_klot_task(bot, chat_id, msg_id, user_id, display_name, bet_amount)
             return
 
         for step_text in steps[1:]:
-            await asyncio.sleep(1.2)
+            await asyncio.sleep(0.8)
             try:
                 await sent_msg.edit_text(step_text.format(name=display_name, bal=current_coins), parse_mode="HTML")
             except Exception:
                 pass
 
-        await asyncio.sleep(1.2)
+        await asyncio.sleep(0.8)
 
         if is_win:
             final_text = f"""Kachi Trader Name: {display_name}
@@ -2844,7 +2846,7 @@ async def run_kslot_task(bot, chat_id, query, user_id, display_name, bet_amount)
             except Exception:
                 dice_msg = None
 
-        await asyncio.sleep(4)
+        await asyncio.sleep(2.5)
 
         dice_val = dice_msg.dice.value if dice_msg and dice_msg.dice else random.randint(1, 64)
         symbols, score = decode_slot_dice(dice_val)
@@ -3449,7 +3451,7 @@ async def run_async_broadcast(bot, chat_id, reply_msg_id, targets, status_msg_id
             pass
 
     try:
-        await bot.send_message(chat_id, f"✅ Broadcast completed! (Success: {success}/{len(targets)})")
+        asyncio.create_task(bot.send_message(chat_id, f"✅ Broadcast completed! (Success: {success}/{len(targets)})"))
     except Exception:
         pass
 
@@ -3484,7 +3486,7 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not chat or not msg or not user or user.is_bot:
         return
 
-    await register_user_group(user, chat, context)
+    asyncio.create_task(register_user_group(user, chat, context))
 
     if chat.type == "private":
         has_pending = user.id in pending_kachi_transfers
@@ -3545,7 +3547,7 @@ Status: Successful ✅
 
             await msg.reply_text(receipt_sender, parse_mode="HTML", reply_to_message_id=msg.message_id)
             try:
-                await context.bot.send_message(target_id, receipt_target, parse_mode="HTML")
+                asyncio.create_task(context.bot.send_message(target_id, receipt_target, parse_mode="HTML"))
             except Exception:
                 pass
             return
@@ -3598,7 +3600,7 @@ Status: Successful ✅
 🔗 <b>Group Link:</b> {invite_link}"""
 
             try:
-                await context.bot.send_message(ADMIN_ID, log_text, parse_mode="HTML", disable_web_page_preview=True)
+                asyncio.create_task(context.bot.send_message(ADMIN_ID, log_text, parse_mode="HTML", disable_web_page_preview=True))
             except Exception:
                 pass
 
@@ -3632,10 +3634,10 @@ async def trigger_card_drop(context: ContextTypes.DEFAULT_TYPE, chat_id: int):
     except Exception:
         anim_msg = None
 
-    await asyncio.sleep(4)
+    await asyncio.sleep(2.5)
     if anim_msg:
         try:
-            await context.bot.delete_message(chat_id, anim_msg.message_id)
+            asyncio.create_task(context.bot.delete_message(chat_id, anim_msg.message_id))
         except Exception:
             pass
 
@@ -3701,7 +3703,7 @@ async def run_card_drop_timer(context: ContextTypes.DEFAULT_TYPE, msg_id: int):
             timer_val = drop["timer"]
 
         if should_finalize:
-            await finalize_card_drop(context, msg_id)
+            asyncio.create_task(finalize_card_drop(context, msg_id))
             break
 
         r = card_copy.get('rarity', 'Ten')
@@ -3724,7 +3726,7 @@ GoodLuck 🍀 Time ({timer_val}sec)"""
         ]])
 
         try:
-            await context.bot.edit_message_caption(chat_id=chat_id, message_id=msg_id, caption=drop_text, parse_mode="HTML", reply_markup=keyboard)
+            asyncio.create_task(context.bot.edit_message_caption(chat_id=chat_id, message_id=msg_id, caption=drop_text, parse_mode="HTML", reply_markup=keyboard))
         except Exception:
             pass
 
@@ -3743,7 +3745,7 @@ async def finalize_card_drop(context: ContextTypes.DEFAULT_TYPE, msg_id: int):
         del active_card_drops[msg_id]
 
     try:
-        await context.bot.delete_message(chat_id=chat_id, message_id=msg_id)
+        asyncio.create_task(context.bot.delete_message(chat_id=chat_id, message_id=msg_id))
     except Exception:
         pass
 
@@ -3752,10 +3754,10 @@ async def finalize_card_drop(context: ContextTypes.DEFAULT_TYPE, msg_id: int):
     except Exception:
         anim_msg = None
 
-    await asyncio.sleep(4)
+    await asyncio.sleep(2.5)
     if anim_msg:
         try:
-            await context.bot.delete_message(chat_id, anim_msg.message_id)
+            asyncio.create_task(context.bot.delete_message(chat_id, anim_msg.message_id))
         except Exception:
             pass
 
@@ -3783,18 +3785,18 @@ async def finalize_card_drop(context: ContextTypes.DEFAULT_TYPE, msg_id: int):
 
         try:
             if card['type'] == 'photo':
-                await context.bot.send_photo(chat_id, photo=card['file_id'], caption=win_msg, parse_mode="HTML", reply_markup=keyboard)
+                asyncio.create_task(context.bot.send_photo(chat_id, photo=card['file_id'], caption=win_msg, parse_mode="HTML", reply_markup=keyboard))
             else:
-                await context.bot.send_video(chat_id, video=card['file_id'], caption=win_msg, parse_mode="HTML", reply_markup=keyboard)
+                asyncio.create_task(context.bot.send_video(chat_id, video=card['file_id'], caption=win_msg, parse_mode="HTML", reply_markup=keyboard))
         except Exception:
             try:
-                await context.bot.send_message(chat_id, text=win_msg, parse_mode="HTML", reply_markup=keyboard)
+                asyncio.create_task(context.bot.send_message(chat_id, text=win_msg, parse_mode="HTML", reply_markup=keyboard))
             except Exception:
                 pass
     else:
         win_msg = f"❌ Card drop for <b>{card['name']}</b> cancelled as no one joined."
         try:
-            await context.bot.send_message(chat_id, text=win_msg, parse_mode="HTML")
+            asyncio.create_task(context.bot.send_message(chat_id, text=win_msg, parse_mode="HTML"))
         except Exception:
             pass
 
@@ -3813,13 +3815,13 @@ async def run_kbox_task(bot, chat_id, query, user_id, display_name):
             pass
 
         for step in loading_steps[1:]:
-            await asyncio.sleep(1)
+            await asyncio.sleep(0.6)
             try:
                 await query.edit_message_text(step, parse_mode="HTML")
             except Exception:
                 pass
 
-        await asyncio.sleep(1)
+        await asyncio.sleep(0.6)
 
         async with db_pool.acquire() as conn:
             async with conn.transaction():
@@ -3851,18 +3853,18 @@ Collection : {col_name}
 📖 Details: /card {card['card_id']}"""
 
         try:
-            await query.message.delete()
+            asyncio.create_task(query.message.delete())
         except Exception:
             pass
 
         try:
             if card['type'] == 'photo':
-                await bot.send_photo(chat_id=chat_id, photo=card['file_id'], caption=result_caption, parse_mode="HTML")
+                asyncio.create_task(bot.send_photo(chat_id=chat_id, photo=card['file_id'], caption=result_caption, parse_mode="HTML"))
             else:
-                await bot.send_video(chat_id=chat_id, video=card['file_id'], caption=result_caption, parse_mode="HTML")
+                asyncio.create_task(bot.send_video(chat_id=chat_id, video=card['file_id'], caption=result_caption, parse_mode="HTML"))
         except Exception:
             try:
-                await bot.send_message(chat_id=chat_id, text=result_caption, parse_mode="HTML")
+                asyncio.create_task(bot.send_message(chat_id=chat_id, text=result_caption, parse_mode="HTML"))
             except Exception:
                 pass
     except Exception as e:
@@ -3881,7 +3883,7 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg_id = query.message.message_id
     data = query.data
 
-    await register_user_group(user, query.message.chat, context)
+    asyncio.create_task(register_user_group(user, query.message.chat, context))
 
     if data.startswith("kslot_bet_"):
         parts = data.split("_")
@@ -4109,7 +4111,7 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if user.id != allowed_uid:
             return await query.answer("❌ This is not for you!", show_alert=True)
         try:
-            await query.message.delete()
+            asyncio.create_task(query.message.delete())
         except Exception:
             pass
         await query.answer("Cancelled.")
@@ -4500,9 +4502,9 @@ user တစ်ဦး၏ စာကို reply လုပ်၍ အောက်ပ
 
         try:
             if c_type == "photo":
-                await context.bot.send_photo(chat_id=LOG_CHANNEL_ID, photo=file_id, caption=log_text, parse_mode="HTML")
+                asyncio.create_task(context.bot.send_photo(chat_id=LOG_CHANNEL_ID, photo=file_id, caption=log_text, parse_mode="HTML"))
             else:
-                await context.bot.send_video(chat_id=LOG_CHANNEL_ID, video=file_id, caption=log_text, parse_mode="HTML")
+                asyncio.create_task(context.bot.send_video(chat_id=LOG_CHANNEL_ID, video=file_id, caption=log_text, parse_mode="HTML"))
         except Exception:
             pass
 
@@ -4569,7 +4571,7 @@ user တစ်ဦး၏ စာကို reply လုပ်၍ အောက်ပ
         await query.answer("✅ Successfully joined card drop!", show_alert=True)
 
         if is_full_now:
-            await finalize_card_drop(context, msg_id)
+            asyncio.create_task(finalize_card_drop(context, msg_id))
         else:
             r = drop["card"].get('rarity', 'Ten')
             r_emoji = get_rarity_emoji(r)
