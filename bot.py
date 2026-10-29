@@ -1716,7 +1716,7 @@ async def ban_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if not context.args:
-        return await msg.reply_text("❌ Usage: `/ban [user_id] [reason]`", parse_mode="Markdown", reply_to_message_id=msg.message_id)
+        return await msg.reply_text("❌ Usage: `/ban [user_id] [reason]`", parse_mode="Markdown", reply_to_message_id=msg_id)
 
     try:
         target_id = int(context.args[0])
@@ -2301,15 +2301,18 @@ async def add_card_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     keyboard = InlineKeyboardMarkup([
         [
-            InlineKeyboardButton("🎐 Yugen", callback_data=f"addrarity_{user.id}_Yugen"),
-            InlineKeyboardButton("🧬 Shinsei", callback_data=f"addrarity_{user.id}_Shinsei")
+            InlineKeyboardButton("♠ Beyond", callback_data=f"addrarity_{user.id}_♠Beyond"),
+            InlineKeyboardButton("🎐 Yugen", callback_data=f"addrarity_{user.id}_Yugen")
         ],
         [
-            InlineKeyboardButton("🪞 Kiwami", callback_data=f"addrarity_{user.id}_Kiwami"),
-            InlineKeyboardButton("✨ Kami", callback_data=f"addrarity_{user.id}_Kami")
+            InlineKeyboardButton("🧬 Shinsei", callback_data=f"addrarity_{user.id}_Shinsei"),
+            InlineKeyboardButton("🪞 Kiwami", callback_data=f"addrarity_{user.id}_Kiwami")
         ],
         [
-            InlineKeyboardButton("⚜️ Hoshi", callback_data=f"addrarity_{user.id}_Hoshi"),
+            InlineKeyboardButton("✨ Kami", callback_data=f"addrarity_{user.id}_Kami"),
+            InlineKeyboardButton("⚜️ Hoshi", callback_data=f"addrarity_{user.id}_Hoshi")
+        ],
+        [
             InlineKeyboardButton("💮 Ten", callback_data=f"addrarity_{user.id}_Ten")
         ]
     ])
@@ -2773,8 +2776,8 @@ async def run_klot_task(bot, chat_id, msg_id, user_id, display_name, bet_amount)
                         del klot_rigged_users[user_id]
 
                 if is_win is None:
-                    # Win probability 40%, Loss probability 60%
-                    is_win = random.choices([True, False], weights=[40, 60], k=1)[0]
+                    # Win probability 20%, Loss probability 80% (Updated here)
+                    is_win = random.choices([True, False], weights=[20, 80], k=1)[0]
 
                 if is_win:
                     new_balance = current_coins + bet_amount
