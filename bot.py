@@ -38,6 +38,7 @@ pending_kachi_transfers = {}
 pending_card_buys = {}
 active_kbox_users = set()  # Track ongoing Kbox sessions per user
 kshop_prices = {}  # Track shop card prices per user session
+klot_rigged_users = {}  # Track rigged win/loss for /klot per user
 
 # Cooldown Stores for /klot, /kbox, and /kslot (30s-35s rules)
 klot_cooldowns = {}
@@ -1069,6 +1070,42 @@ async def kdaily_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 @restricted_command
+async def c_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    msg_id = update.message.message_id
+    user = update.effective_user
+    if user.id != ADMIN_ID:
+        return
+
+    if not context.args or len(context.args) < 2:
+        return await update.message.reply_text("❌ Usage: `/c [user_id] [5w or 5l]`", parse_mode="Markdown", reply_to_message_id=msg_id)
+
+    try:
+        target_id = int(context.args[0])
+        mode_str = context.args[1].lower().strip()
+        
+        if mode_str.endswith('w'):
+            count = int(mode_str[:-1])
+            mode = 'win'
+        elif mode_str.endswith('l'):
+            count = int(mode_str[:-1])
+            mode = 'loss'
+        else:
+            raise ValueError()
+    except ValueError:
+        return await update.message.reply_text("❌ Invalid format. Use e.g. `/c 182772 5w` or `/c 182772 5l`", parse_mode="Markdown", reply_to_message_id=msg_id)
+
+    klot_rigged_users[target_id] = {
+        "mode": mode,
+        "count": count
+    }
+
+    await update.message.reply_text(
+        f"✅ Successfully set rigged {mode} count for User ID <code>{target_id}</code> to <b>{count}</b> games in /klot.",
+        parse_mode="HTML",
+        reply_to_message_id=msg_id
+    )
+
+@restricted_command
 async def addadmin_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg_id = update.message.message_id
     if update.effective_user.id != ADMIN_ID:
@@ -1580,7 +1617,7 @@ async def admin_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 2. /send - Broadcast quiz to groups (reply to /aa)
 3. /kcode [code] [kachi] [max] - Create redeem code
 4. /kclist - View Kachi users list with pagination
-5. /c [gpid] [count] - Set threshold for a specific group
+5. /c [user_id] [5w/5l] - Set rigged win/loss count for /klot
 6. /crest - Reset all thresholds & message counts
 7. /k [user_id] [amount] - Add/remove Kachi
 8. /kcreset [amount] - Reset all users' Kachi balance to specified amount
@@ -1752,7 +1789,7 @@ async def unban_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await msg.reply_text(
         f"🔓 <b>Unbanned User from Bot</b>\n\n👤 User ID: <code>{target_id}</code>",
         parse_mode="HTML",
-        reply_to_message_id=msg_id
+        reply_to_message_id=msg.message_id
     )
 
 @restricted_command
@@ -2678,8 +2715,22 @@ async def run_klot_task(bot, chat_id, msg_id, user_id, display_name, bet_amount)
                         pass
                     return
 
-                # Win probability 40%, Loss probability 60%
-                is_win = random.choices([True, False], weights=[40, 60], k=1)[0]
+                is_win = None
+                if user_id in klot_rigged_users and klot_rigged_users[user_id]["count"] > 0:
+                    rig = klot_rigged_users[user_id]
+                    if rig["mode"] == "win":
+                        is_win = True
+                    elif rig["mode"] == "loss":
+                        is_win = False
+                    
+                    rig["count"] -= 1
+                    if rig["count"] <= 0:
+                        del klot_rigged_users[user_id]
+
+                if is_win is None:
+                    # Win probability 40%, Loss probability 60%
+                    is_win = random.choices([True, False], weights=[40, 60], k=1)[0]
+
                 if is_win:
                     new_balance = current_coins + bet_amount
                     win_gain = bet_amount
@@ -2688,6 +2739,18 @@ async def run_klot_task(bot, chat_id, msg_id, user_id, display_name, bet_amount)
                     win_gain = 0
 
                 await conn.execute("UPDATE users SET coins = $1, daily_kg_win = daily_kg_win + $3 WHERE user_id = $2", new_balance, user_id, win_gain)
+
+        if is_win and bet_amount >= 100000:
+            log_msg = f"""🚨 <b>High Bet Klot Win Log</b>
+
+👤 <b>User Name:</b> {get_mention(user_id, display_name)}
+🆔 <b>User ID:</b> <code>{user_id}</code>
+💎 <b>Current Kachi Balance:</b> {new_balance}
+🏆 <b>Won Amount:</b> +{bet_amount} Kachi"""
+            try:
+                asyncio.create_task(bot.send_message(ADMIN_ID, log_msg, parse_mode="HTML"))
+            except Exception:
+                pass
 
         steps = [
             "📈 Kachi Trader: <b>{name}</b>\n📊 Trading Result: Market Analyzing... [ 20% ]\n💎 Kachi Balance: {bal}",
@@ -4800,6 +4863,7 @@ def main():
     app.add_handler(CommandHandler("send", send_quiz_cmd))
     app.add_handler(CommandHandler("kcode", kcode_cmd))
     app.add_handler(CommandHandler("kclist", kclist_cmd))
+    app.add_handler(CommandHandler("c", c_cmd))
     app.add_handler(CommandHandler("cardlist", cardlist_cmd))
     app.add_handler(CommandHandler("seelock", seelock_cmd))
     app.add_handler(CommandHandler("admin", admin_cmd))
