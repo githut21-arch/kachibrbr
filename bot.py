@@ -90,7 +90,8 @@ async def init_db():
                 last_kbox_reset BIGINT DEFAULT 0,
                 kc_rarity_mode TEXT DEFAULT NULL,
                 referred_by BIGINT,
-                referral_count INT DEFAULT 0
+                referral_count INT DEFAULT 0,
+                daily_kg_win BIGINT DEFAULT 0
             );
             CREATE TABLE IF NOT EXISTS groups (
                 chat_id BIGINT PRIMARY KEY,
@@ -147,6 +148,7 @@ async def init_db():
             await conn.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS kc_rarity_mode TEXT DEFAULT NULL;")
             await conn.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS referred_by BIGINT;")
             await conn.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS referral_count INT DEFAULT 0;")
+            await conn.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS daily_kg_win BIGINT DEFAULT 0;")
             await conn.execute("ALTER TABLE groups ADD COLUMN IF NOT EXISTS added_by_id BIGINT;")
             await conn.execute("ALTER TABLE groups ADD COLUMN IF NOT EXISTS added_by_name TEXT;")
             await conn.execute("ALTER TABLE groups ADD COLUMN IF NOT EXISTS threshold INT DEFAULT 60;")
@@ -1561,7 +1563,7 @@ async def umute_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if not context.args:
-        return await msg.reply_text("❌ Usage: `/umute [user_id]`", parse_mode="Markdown", reply_to_message_id=msg.message_id)
+        return await msg.reply_text("❌ Usage: `/umute [user_id]`", parse_mode="Markdown", reply_to_message_id=msg_id)
 
     try:
         target_id = int(context.args[0])
@@ -1585,7 +1587,7 @@ async def unban_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if not context.args:
-        return await msg.reply_text("❌ Usage: `/unban [user_id]`", parse_mode="Markdown", reply_to_message_id=msg.message_id)
+        return await msg.reply_text("❌ Usage: `/unban [user_id]`", parse_mode="Markdown", reply_to_message_id=msg_id)
 
     try:
         target_id = int(context.args[0])
@@ -1609,7 +1611,7 @@ async def check_user_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if not context.args:
-        return await msg.reply_text("❌ Usage: `/check [user_id]`", parse_mode="Markdown", reply_to_message_id=msg.message_id)
+        return await msg.reply_text("❌ Usage: `/check [user_id]`", parse_mode="Markdown", reply_to_message_id=msg_id)
 
     try:
         target_id = int(context.args[0])
@@ -1779,6 +1781,80 @@ async def kgtop_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     lines.append("▰▱▰▱▰▱▰▱▰▱▰▱")
     text = "\n".join(lines)
     await update.message.reply_text(text, parse_mode="HTML", reply_to_message_id=msg_id)
+
+
+# --- /kg Command Implementation (Daily Top Kachi Game) ---
+@restricted_command
+async def kg_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await check_force_join(update, context):
+        return
+    msg_id = update.message.message_id
+    now = int(time.time())
+    cooldown = 86400
+
+    async with db_pool.acquire() as conn:
+        async with conn.transaction():
+            # Check daily reset and prize distribution
+            setting_row = await conn.fetchrow("SELECT value FROM settings WHERE key = 'last_kg_reset' FOR UPDATE")
+            last_kg_reset = int(setting_row['value']) if setting_row else 0
+
+            if now - last_kg_reset >= cooldown:
+                # Distribute prizes to top 8 winners of previous day
+                top_winners = await conn.fetch("""
+                    SELECT user_id, daily_kg_win FROM users 
+                    WHERE daily_kg_win > 0 
+                    ORDER BY daily_kg_win DESC 
+                    LIMIT 8
+                """)
+
+                prizes = [15000, 8000, 5000, 3000, 2000, 2000, 1500, 1500]
+                for idx, winner in enumerate(top_winners):
+                    prize = prizes[idx]
+                    await conn.execute("UPDATE users SET coins = coins + $1 WHERE user_id = $2", prize, winner['user_id'])
+                    try:
+                        await context.bot.send_message(
+                            winner['user_id'],
+                            f"🏆 <b>Daily KGAME Top Winner!</b>\n\n"
+                            f"Congratulations! You ranked #{idx+1} in Daily KGAME Top.\n"
+                            f"🎁 Reward: <b>+{prize} Kachi</b> 🩸",
+                            parse_mode="HTML"
+                        )
+                    except Exception:
+                        pass
+
+                # Reset daily wins and update last reset timestamp
+                await conn.execute("UPDATE users SET daily_kg_win = 0")
+                if setting_row:
+                    await conn.execute("UPDATE settings SET value = $1 WHERE key = 'last_kg_reset'", str(now))
+                else:
+                    await conn.execute("INSERT INTO settings (key, value) VALUES ('last_kg_reset', $1)", str(now))
+
+        # Fetch top 15 daily winners
+        top_users = await conn.fetch("""
+            SELECT user_id, name, daily_kg_win FROM users
+            ORDER BY daily_kg_win DESC, coins DESC
+            LIMIT 15
+        """)
+
+    lines = [
+        "𝗗𝗔𝗜𝗟𝗬 🌍𝗧𝗢𝗣 -15-  𝗞𝗚𝗔𝗠𝗘,  𝗣𝗟𝗔𝗬𝗘𝗥𝗦",
+        "",
+        "Players              Total Kachi Win",
+        "▰▱▰▱▰▱▰▱▰▱▰"
+    ]
+    medals = ["🥇", "🥈", "🥉"]
+    for i in range(15):
+        prefix = medals[i] if i < 3 else "☞"
+        if i < len(top_users):
+            r = top_users[i]
+            mention = get_mention(r['user_id'], r['name'])
+            lines.append(f"{prefix} {mention} - {r['daily_kg_win']} Kachi")
+        else:
+            lines.append(f"{prefix}")
+    lines.append("▰▱▰▱▰▱▰▱▰▱▰")
+    text = "\n".join(lines)
+    await update.message.reply_text(text, parse_mode="HTML", reply_to_message_id=msg_id)
+
 
 @restricted_command
 async def admin_coin_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -2460,10 +2536,12 @@ async def run_klot_task(bot, chat_id, msg_id, user_id, display_name, bet_amount)
                 is_win = random.choice([True, False])
                 if is_win:
                     new_balance = current_coins + bet_amount
+                    win_gain = bet_amount
                 else:
                     new_balance = max(0, current_coins - bet_amount)
+                    win_gain = 0
 
-                await conn.execute("UPDATE users SET coins = $1 WHERE user_id = $2", new_balance, user_id)
+                await conn.execute("UPDATE users SET coins = $1, daily_kg_win = daily_kg_win + $3 WHERE user_id = $2", new_balance, user_id, win_gain)
 
         steps = [
             "📈 Kachi Trader: <b>{name}</b>\n📊 Trading Result: Market Analyzing... [ 20% ]\n💎 Kachi Balance: {bal}",
@@ -2688,24 +2766,24 @@ async def run_kslot_task(bot, chat_id, query, user_id, display_name, bet_amount)
         if score >= 32:
             payout = bet_amount * 2
             result_type = "Win 2x 🏆"
-            net_gain = f"+{bet_amount}"
+            net_gain = bet_amount
         elif score >= 28:
             payout = int(bet_amount * 1.5)
             result_type = "Win 1.5x ✨"
-            net_gain = f"+{int(bet_amount * 0.5)}"
+            net_gain = int(bet_amount * 0.5)
         elif score >= 26:
             payout = bet_amount
             result_type = "Draw / Refund 1x 🤝"
-            net_gain = "0"
+            net_gain = 0
         else:
             payout = 0
             result_type = "Loss 0x 💔"
-            net_gain = f"-{bet_amount}"
+            net_gain = -bet_amount
 
         final_payout_total = payout
         async with db_pool.acquire() as conn:
             async with conn.transaction():
-                await conn.execute("UPDATE users SET coins = coins + $1 WHERE user_id = $2", final_payout_total, user_id)
+                await conn.execute("UPDATE users SET coins = coins + $1, daily_kg_win = daily_kg_win + $3 WHERE user_id = $2", final_payout_total, user_id, max(0, net_gain))
                 updated_user = await conn.fetchrow("SELECT coins FROM users WHERE user_id = $1", user_id)
                 new_balance = updated_user['coins'] if updated_user else new_balance_after_bet + final_payout_total
 
@@ -3490,7 +3568,7 @@ async def trigger_card_drop(context: ContextTypes.DEFAULT_TYPE, chat_id: int):
 
     drop_text = f"""{r_emoji} A Character Card Spawned In The Chat ❄
 
-[ 𝗝O𝗜𝗡 ] Fast For The Claim
+[ 𝗝𝗢𝗜𝗡 ] Fast For The Claim
  Card ❀
 
 {joined_str}
@@ -4573,6 +4651,7 @@ def main():
     app.add_handler(CommandHandler("card", card_detail_cmd))
     app.add_handler(CommandHandler("ktop", ktop_cmd))
     app.add_handler(CommandHandler("kgtop", kgtop_cmd))
+    app.add_handler(CommandHandler("kg", kg_cmd))
     app.add_handler(CommandHandler("ksearch", ksearch_cmd))
 
     # Admin Commands
