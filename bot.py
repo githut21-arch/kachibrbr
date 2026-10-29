@@ -1430,14 +1430,14 @@ async def buy_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "items": verified_items
     }
 
-# --- New Admin Command /kcode ---
+# --- /kcode Command Implementation ---
 @restricted_command
 async def kcode_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg_id = update.message.message_id
     if update.effective_user.id != ADMIN_ID:
         return
 
-    if len(context.args) < 3:
+    if not context.args or len(context.args) < 3:
         return await update.message.reply_text("❌ Usage: `/kcode [code] [kachi_amount] [max_users]`\nဥပမာ: `/kcode wond 2000 5`", parse_mode="Markdown", reply_to_message_id=msg_id)
 
     code = context.args[0].strip().lower()
@@ -1451,19 +1451,19 @@ async def kcode_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await conn.execute("""
             INSERT INTO redeem_codes (code, kachi, max_uses, used_count)
             VALUES ($1, $2, $3, 0)
-            ON CONFLICT (code) DO UPDATE SET kachi = EXCLUDED.kachi, max_uses = EXCLUDED.max_uses
+            ON CONFLICT (code) DO UPDATE SET kachi = EXCLUDED.kachi, max_uses = EXCLUDED.max_uses, used_count = 0
         """, code, kachi_amount, max_uses)
 
     await update.message.reply_text(
         f"✅ <b>Redeem Code Created Successfully!</b>\n\n"
         f"🔑 Code: <code>{code}</code>\n"
         f"💎 Kachi: <b>{kachi_amount}</b>\n"
-        f"👥 Max Users: <b>{max_uses}</b>",
+        f"👥 Max Uses: <b>{max_uses}</b>",
         parse_mode="HTML",
         reply_to_message_id=msg_id
     )
 
-# --- New User Command /rede ---
+# --- User Command /rede ---
 @restricted_command
 async def rede_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await check_force_join(update, context):
@@ -1489,16 +1489,13 @@ async def rede_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
             max_uses = code_row['max_uses']
             used_count = code_row['used_count']
 
-            # Check if user already redeemed
             already = await conn.fetchrow("SELECT 1 FROM code_redemptions WHERE code = $1 AND user_id = $2", code, user.id)
             if already:
                 return await msg.reply_text("❌ <b>သင်သည် ဤ Code ကို အသုံးပြုပြီးသား ဖြစ်ပါသည်။</b>", parse_mode="HTML", reply_to_message_id=msg_id)
 
-            # Check if full
             if used_count >= max_uses:
                 return await msg.reply_text("❌ <b>ဝမ်းနည်းပါတယ်၊ ဤ Code မှာ လူပြည့်သွားပါပြီ (Limit Reached)။</b>", parse_mode="HTML", reply_to_message_id=msg_id)
 
-            # Update usage and user redemption
             await conn.execute("UPDATE redeem_codes SET used_count = used_count + 1 WHERE code = $1", code)
             await conn.execute("INSERT INTO code_redemptions (code, user_id) VALUES ($1, $2)", code, user.id)
             await conn.execute("UPDATE users SET coins = coins + $1 WHERE user_id = $2", kachi, user.id)
@@ -1515,6 +1512,61 @@ async def rede_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         reply_to_message_id=msg_id
     )
 
+# --- Admin /kclist Command Implementation ---
+async def render_kclist_page(update_or_query, context: ContextTypes.DEFAULT_TYPE, page: int = 0):
+    msg_id = update_or_query.message.message_id if isinstance(update_or_query, Update) and update_or_query.message else None
+    async with db_pool.acquire() as conn:
+        users = await conn.fetch("SELECT user_id, name, coins FROM users ORDER BY coins DESC, user_id ASC")
+
+    if not users:
+        text = "👥 <b>User list is empty.</b>"
+        if isinstance(update_or_query, Update):
+            return await update_or_query.message.reply_text(text, parse_mode="HTML", reply_to_message_id=msg_id)
+        else:
+            return await update_or_query.edit_message_text(text, parse_mode="HTML")
+
+    per_page = 10
+    total_users = len(users)
+    total_pages = (total_users + per_page - 1) // per_page
+    page = max(0, min(page, total_pages - 1))
+
+    start_idx = page * per_page
+    end_idx = start_idx + per_page
+    current_users = users[start_idx:end_idx]
+
+    user_text_list = []
+    for idx, u in enumerate(current_users, start=start_idx + 1):
+        mention = get_mention(u['user_id'], u['name'] or "User")
+        user_text_list.append(f"{idx}. {mention} (ID: <code>{u['user_id']}</code>) — <b>{u['coins']}</b> Kachi 🩸")
+
+    users_str = "\n".join(user_text_list)
+    text = f"""💰 <b>Kachi Users List (Page {page + 1}/{total_pages})</b>
+
+{users_str}"""
+
+    buttons = []
+    nav_row = []
+    if page > 0:
+        nav_row.append(InlineKeyboardButton("◀️ Back", callback_data=f"kclist_{page - 1}"))
+    if page < total_pages - 1:
+        nav_row.append(InlineKeyboardButton("Next ▶️", callback_data=f"kclist_{page + 1}"))
+    if nav_row:
+        buttons.append(nav_row)
+
+    markup = InlineKeyboardMarkup(buttons) if buttons else None
+
+    if isinstance(update_or_query, Update):
+        await update_or_query.message.reply_text(text, parse_mode="HTML", reply_markup=markup, reply_to_message_id=msg_id)
+    else:
+        await update_or_query.edit_message_text(text, parse_mode="HTML", reply_markup=markup)
+
+@restricted_command
+async def kclist_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    msg_id = update.message.message_id
+    if update.effective_user.id != ADMIN_ID:
+        return
+    await render_kclist_page(update, context, page=0)
+
 @restricted_command
 async def admin_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg_id = update.message.message_id
@@ -1527,29 +1579,30 @@ async def admin_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 1. /aa - Create trivia quiz
 2. /send - Broadcast quiz to groups (reply to /aa)
 3. /kcode [code] [kachi] [max] - Create redeem code
-4. /c [gpid] [count] - Set threshold for a specific group
-5. /crest - Reset all thresholds & message counts
-6. /k [user_id] [amount] - Add/remove Kachi
-7. /kcreset [amount] - Reset all users' Kachi balance to specified amount
-8. /addadmin [user_id] - Add Card Admin
-9. /badmin [user_id] - Set Card Buyer
-10. /buy [seller_id] [card_id] ... - Buy cards from user (removes from seller)
-11. /got [card_id] - Get card directly to your inventory (Admin only)
-12. /add - Add new card (reply to media) / /add [user_id] for Birthday Special card
-13. /unlock [card_id/all] - Unlock Yugen, locked card, or all cards
-14. /lock [card_id/all] - Lock card or all cards
-15. /spw [card_id] - Spawn random card or specific card
-16. /del [card_id_or_name] - Delete card by ID or Name
-17. /cardlist - View all cards
-18. /seelock - View Yugen cards lock status and drops (Admin only)
-19. /glist - View groups list
-20. /stats - View stats
-21. /broadcast - Broadcast message
-22. /check [user_id] - Check user profile info
-23. /mute [id] [time] [reason] - Mute user from bot usage
-24. /ban [id] [reason] - Ban user from bot usage
-25. /umute [id] - Unmute user from bot usage
-26. /unban [id] - Unban user from bot usage"""
+4. /kclist - View Kachi users list with pagination
+5. /c [gpid] [count] - Set threshold for a specific group
+6. /crest - Reset all thresholds & message counts
+7. /k [user_id] [amount] - Add/remove Kachi
+8. /kcreset [amount] - Reset all users' Kachi balance to specified amount
+9. /addadmin [user_id] - Add Card Admin
+10. /badmin [user_id] - Set Card Buyer
+11. /buy [seller_id] [card_id] ... - Buy cards from user (removes from seller)
+12. /got [card_id] - Get card directly to your inventory (Admin only)
+13. /add - Add new card (reply to media) / /add [user_id] for Birthday Special card
+14. /unlock [card_id/all] - Unlock Yugen, locked card, or all cards
+15. /lock [card_id/all] - Lock card or all cards
+16. /spw [card_id] - Spawn random card or specific card
+17. /del [card_id_or_name] - Delete card by ID or Name
+18. /cardlist - View all cards
+19. /seelock - View Yugen cards lock status and drops (Admin only)
+20. /glist - View groups list
+21. /stats - View stats
+22. /broadcast - Broadcast message
+23. /check [user_id] - Check user profile info
+24. /mute [id] [time] [reason] - Mute user from bot usage
+25. /ban [id] [reason] - Ban user from bot usage
+26. /umute [id] - Unmute user from bot usage
+27. /unban [id] - Unban user from bot usage"""
 
     await update.message.reply_text(text, parse_mode="HTML", reply_to_message_id=msg_id)
 
@@ -1699,7 +1752,7 @@ async def unban_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await msg.reply_text(
         f"🔓 <b>Unbanned User from Bot</b>\n\n👤 User ID: <code>{target_id}</code>",
         parse_mode="HTML",
-        reply_to_message_id=msg.message_id
+        reply_to_message_id=msg_id
     )
 
 @restricted_command
@@ -1710,7 +1763,7 @@ async def check_user_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if not context.args:
-        return await msg.reply_text("❌ Usage: `/check [user_id]`", parse_mode="Markdown", reply_to_message_id=msg.message_id)
+        return await msg.reply_text("❌ Usage: `/check [user_id]`", parse_mode="Markdown", reply_to_message_id=msg_id)
 
     try:
         target_id = int(context.args[0])
@@ -1720,7 +1773,7 @@ async def check_user_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     async with db_pool.acquire() as conn:
         user_row = await conn.fetchrow("SELECT coins, selected_card_id, name FROM users WHERE user_id = $1", target_id)
         if not user_row:
-            return await msg.reply_text(f"❌ User ID <code>{target_id}</code> not found in database.", parse_mode="HTML", reply_to_message_id=msg.message_id)
+            return await msg.reply_text(f"❌ User ID <code>{target_id}</code> not found in database.", parse_mode="HTML", reply_to_message_id=msg_id)
 
         coins = user_row['coins'] or 1000
         selected_card_id = user_row['selected_card_id']
@@ -2117,7 +2170,7 @@ async def add_card_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         if any(c.isalpha() for c in card_id):
             return await update.message.reply_text(
-                "❌ Card ID ထဲတွင် English စာလုံးများ (Letters) ပါဝင်၍ မရပါ။ နံပတ် (Numbers) သာ ဖြစ်ရပါမည် (ဥပမာ - 02873)။",
+                "❌ Card ID ထဲတွင် English စာလုံးများ (Letters) ပါဝင်၍ မရပါ။ နံပတ် (Numbers) သာ ဖြစ်ရပါမည် (ဥပမာ - 02873)。",
                 parse_mode="HTML",
                 reply_to_message_id=msg_id
             )
@@ -2298,7 +2351,6 @@ async def kshop_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = f"""Hello {user.first_name}
 You can buy the highest-tier 🎀Birthday Special / 📓Raiden / 🦠Kryora / 🎐Yugen / 🧬Shinsei / 🪞 Kiwami rarity cards here"""
 
-    # Ten hoshi Kami ကို မထည့်ဘဲ တောင်းဆိုထားသည့် Rarity များအတိုင်း စီစဉ်ထားသည်
     keyboard = InlineKeyboardMarkup([
         [
             InlineKeyboardButton("🎀 Birthday Special", callback_data=f"kshop_rarity_{user.id}_Birthday Special"),
@@ -2327,7 +2379,6 @@ async def render_kshop_card(query, context, user_id, rarity, index):
     
     price_key = (user_id, card['card_id'])
     if price_key not in kshop_prices:
-        # Kachi Value / Kshop price ranges adjusted to requested rules
         if rarity == 'Birthday Special':
             kshop_prices[price_key] = random.randint(4000, 6000)
         elif rarity == 'Raiden':
@@ -2627,7 +2678,8 @@ async def run_klot_task(bot, chat_id, msg_id, user_id, display_name, bet_amount)
                         pass
                     return
 
-                is_win = random.choice([True, False])
+                # Win probability 40%, Loss probability 60%
+                is_win = random.choices([True, False], weights=[40, 60], k=1)[0]
                 if is_win:
                     new_balance = current_coins + bet_amount
                     win_gain = bet_amount
@@ -4680,6 +4732,14 @@ GoodLuck 🍀 Time ({drop['timer']}sec)"""
         await query.answer()
         return
 
+    if data.startswith("kclist_"):
+        if user.id != ADMIN_ID:
+            return await query.answer("❌ Admin only.", show_alert=True)
+        page = int(data.replace("kclist_", ""))
+        await render_kclist_page(query, context, page=page)
+        await query.answer()
+        return
+
     if data.startswith("clist_"):
         parts = data.split("_")
         page = int(parts[1])
@@ -4733,12 +4793,13 @@ def main():
     app.add_handler(CommandHandler("kgtop", kgtop_cmd))
     app.add_handler(CommandHandler("kg", kg_cmd))
     app.add_handler(CommandHandler("ksearch", ksearch_cmd))
-    app.add_handler(CommandHandler("rede", rede_cmd))  # User Redeem Command
+    app.add_handler(CommandHandler("rede", rede_cmd))
 
     # Admin Commands
     app.add_handler(CommandHandler("aa", aa_cmd))
     app.add_handler(CommandHandler("send", send_quiz_cmd))
-    app.add_handler(CommandHandler("kcode", kcode_cmd))  # Admin Code Creator Command
+    app.add_handler(CommandHandler("kcode", kcode_cmd))
+    app.add_handler(CommandHandler("kclist", kclist_cmd))
     app.add_handler(CommandHandler("cardlist", cardlist_cmd))
     app.add_handler(CommandHandler("seelock", seelock_cmd))
     app.add_handler(CommandHandler("admin", admin_cmd))
