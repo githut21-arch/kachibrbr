@@ -126,6 +126,17 @@ async def init_db():
                 amount INT DEFAULT 1,
                 PRIMARY KEY (user_id, card_id)
             );
+            CREATE TABLE IF NOT EXISTS redeem_codes (
+                code TEXT PRIMARY KEY,
+                kachi BIGINT NOT NULL,
+                max_uses INT NOT NULL,
+                used_count INT DEFAULT 0
+            );
+            CREATE TABLE IF NOT EXISTS code_redemptions (
+                code TEXT,
+                user_id BIGINT,
+                PRIMARY KEY (code, user_id)
+            );
             CREATE INDEX IF NOT EXISTS idx_user_cards_user_id ON user_cards(user_id);
             CREATE INDEX IF NOT EXISTS idx_user_cards_card_id ON user_cards(card_id);
             CREATE INDEX IF NOT EXISTS idx_group_members_chat_user ON group_members(chat_id, user_id);
@@ -552,19 +563,21 @@ async def pre_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     col_name = card.get('collection') or "🎞 Ope Ope No Mi [ 🩺]"
 
     if r == 'Raiden':
-        coin_value = "30000-55000"
+        coin_value = "50000-69000"
     elif r == 'Kryora':
-        coin_value = "20000-38000"
+        coin_value = "35000-44800"
+    elif r == 'Yugen':
+        coin_value = "18000-28000"
     elif r == 'Shinsei':
-        coin_value = "2000-3000"
+        coin_value = "9000-15000"
     elif r == 'Kiwami':
-        coin_value = "1500-1900"
+        coin_value = "5000-7300"
     elif r == 'Kami':
-        coin_value = "800-1200"
+        coin_value = "4500-5700"
     elif r == 'Hoshi':
-        coin_value = "350-500"
+        coin_value = "1800-2800"
     else:
-        coin_value = "150-300"
+        coin_value = "1000-2500"
 
     caption_text = f"""🎗 Congratulations , {get_mention(user.id, display_name)} You Got A New Character in Pre 
 
@@ -932,21 +945,21 @@ async def ksellcard_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
                         if rarity == 'Birthday Special':
                             item_coins_total += random.randint(4000, 6000)
                         elif rarity == 'Raiden':
-                            item_coins_total += random.randint(30000, 55000)
+                            item_coins_total += random.randint(50000, 69000)
                         elif rarity == 'Kryora':
-                            item_coins_total += random.randint(20000, 38000)
+                            item_coins_total += random.randint(35000, 44800)
                         elif rarity == 'Yugen':
-                            item_coins_total += random.randint(4000, 6000)
+                            item_coins_total += random.randint(18000, 28000)
                         elif rarity == 'Shinsei':
-                            item_coins_total += random.randint(300, 500)
+                            item_coins_total += random.randint(9000, 15000)
                         elif rarity == 'Kiwami':
-                            item_coins_total += random.randint(150, 250)
+                            item_coins_total += random.randint(5000, 7300)
                         elif rarity == 'Kami':
-                            item_coins_total += random.randint(100, 150)
+                            item_coins_total += random.randint(4500, 5700)
                         elif rarity == 'Hoshi':
-                            item_coins_total += random.randint(70, 90)
+                            item_coins_total += random.randint(1800, 2800)
                         else:
-                            item_coins_total += random.randint(70, 90)
+                            item_coins_total += random.randint(1000, 2500)
 
                     total_earned_coins += item_coins_total
                     verified_sales.append({
@@ -1417,6 +1430,91 @@ async def buy_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "items": verified_items
     }
 
+# --- New Admin Command /kcode ---
+@restricted_command
+async def kcode_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    msg_id = update.message.message_id
+    if update.effective_user.id != ADMIN_ID:
+        return
+
+    if len(context.args) < 3:
+        return await update.message.reply_text("❌ Usage: `/kcode [code] [kachi_amount] [max_users]`\nဥပမာ: `/kcode wond 2000 5`", parse_mode="Markdown", reply_to_message_id=msg_id)
+
+    code = context.args[0].strip().lower()
+    try:
+        kachi_amount = int(context.args[1])
+        max_uses = int(context.args[2])
+    except ValueError:
+        return await update.message.reply_text("❌ Invalid Kachi amount or max users.", reply_to_message_id=msg_id)
+
+    async with db_pool.acquire() as conn:
+        await conn.execute("""
+            INSERT INTO redeem_codes (code, kachi, max_uses, used_count)
+            VALUES ($1, $2, $3, 0)
+            ON CONFLICT (code) DO UPDATE SET kachi = EXCLUDED.kachi, max_uses = EXCLUDED.max_uses
+        """, code, kachi_amount, max_uses)
+
+    await update.message.reply_text(
+        f"✅ <b>Redeem Code Created Successfully!</b>\n\n"
+        f"🔑 Code: <code>{code}</code>\n"
+        f"💎 Kachi: <b>{kachi_amount}</b>\n"
+        f"👥 Max Users: <b>{max_uses}</b>",
+        parse_mode="HTML",
+        reply_to_message_id=msg_id
+    )
+
+# --- New User Command /rede ---
+@restricted_command
+async def rede_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not await check_force_join(update, context):
+        return
+    user = update.effective_user
+    chat = update.effective_chat
+    msg = update.message
+    msg_id = msg.message_id
+    await register_user_group(user, chat, context)
+
+    if not context.args:
+        return await msg.reply_text("❌ Usage: `/rede [code]`", parse_mode="Markdown", reply_to_message_id=msg_id)
+
+    code = context.args[0].strip().lower()
+
+    async with db_pool.acquire() as conn:
+        async with conn.transaction():
+            code_row = await conn.fetchrow("SELECT kachi, max_uses, used_count FROM redeem_codes WHERE code = $1 FOR UPDATE", code)
+            if not code_row:
+                return await msg.reply_text("❌ <b>အသုံးမပြုနိုင်သော (သို့မဟုတ်) မရှိတော့သော Code ဖြစ်ပါသည်။</b>", parse_mode="HTML", reply_to_message_id=msg_id)
+
+            kachi = code_row['kachi']
+            max_uses = code_row['max_uses']
+            used_count = code_row['used_count']
+
+            # Check if user already redeemed
+            already = await conn.fetchrow("SELECT 1 FROM code_redemptions WHERE code = $1 AND user_id = $2", code, user.id)
+            if already:
+                return await msg.reply_text("❌ <b>သင်သည် ဤ Code ကို အသုံးပြုပြီးသား ဖြစ်ပါသည်။</b>", parse_mode="HTML", reply_to_message_id=msg_id)
+
+            # Check if full
+            if used_count >= max_uses:
+                return await msg.reply_text("❌ <b>ဝမ်းနည်းပါတယ်၊ ဤ Code မှာ လူပြည့်သွားပါပြီ (Limit Reached)။</b>", parse_mode="HTML", reply_to_message_id=msg_id)
+
+            # Update usage and user redemption
+            await conn.execute("UPDATE redeem_codes SET used_count = used_count + 1 WHERE code = $1", code)
+            await conn.execute("INSERT INTO code_redemptions (code, user_id) VALUES ($1, $2)", code, user.id)
+            await conn.execute("UPDATE users SET coins = coins + $1 WHERE user_id = $2", kachi, user.id)
+
+            updated_user = await conn.fetchrow("SELECT coins FROM users WHERE user_id = $1", user.id)
+            new_balance = updated_user['coins'] if updated_user else kachi
+
+    await msg.reply_text(
+        f"🎉 <b>Code Redeemed Successfully!</b>\n\n"
+        f"👤 User: {get_mention(user.id, user.first_name)}\n"
+        f"🎁 Reward: <b>+{kachi} Kachi</b> 🩸\n"
+        f"💰 Total Balance: <b>{new_balance}</b> Kachi ✨",
+        parse_mode="HTML",
+        reply_to_message_id=msg_id
+    )
+
 @restricted_command
 async def admin_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg_id = update.message.message_id
@@ -1428,29 +1526,30 @@ async def admin_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 👑 <b>List:</b>
 1. /aa - Create trivia quiz
 2. /send - Broadcast quiz to groups (reply to /aa)
-3. /c [gpid] [count] - Set threshold for a specific group
-4. /crest - Reset all thresholds & message counts
-5. /k [user_id] [amount] - Add/remove Kachi
-6. /kcreset [amount] - Reset all users' Kachi balance to specified amount
-7. /addadmin [user_id] - Add Card Admin
-8. /badmin [user_id] - Set Card Buyer
-9. /buy [seller_id] [card_id] ... - Buy cards from user (removes from seller)
-10. /got [card_id] - Get card directly to your inventory (Admin only)
-11. /add - Add new card (reply to media) / /add [user_id] for Birthday Special card
-12. /unlock [card_id/all] - Unlock Yugen, locked card, or all cards
-13. /lock [card_id/all] - Lock card or all cards
-14. /spw [card_id] - Spawn random card or specific card
-15. /del [card_id_or_name] - Delete card by ID or Name
-16. /cardlist - View all cards
-17. /seelock - View Yugen cards lock status and drops (Admin only)
-18. /glist - View groups list
-19. /stats - View stats
-20. /broadcast - Broadcast message
-21. /check [user_id] - Check user profile info
-22. /mute [id] [time] [reason] - Mute user from bot usage
-23. /ban [id] [reason] - Ban user from bot usage
-24. /umute [id] - Unmute user from bot usage
-25. /unban [id] - Unban user from bot usage"""
+3. /kcode [code] [kachi] [max] - Create redeem code
+4. /c [gpid] [count] - Set threshold for a specific group
+5. /crest - Reset all thresholds & message counts
+6. /k [user_id] [amount] - Add/remove Kachi
+7. /kcreset [amount] - Reset all users' Kachi balance to specified amount
+8. /addadmin [user_id] - Add Card Admin
+9. /badmin [user_id] - Set Card Buyer
+10. /buy [seller_id] [card_id] ... - Buy cards from user (removes from seller)
+11. /got [card_id] - Get card directly to your inventory (Admin only)
+12. /add - Add new card (reply to media) / /add [user_id] for Birthday Special card
+13. /unlock [card_id/all] - Unlock Yugen, locked card, or all cards
+14. /lock [card_id/all] - Lock card or all cards
+15. /spw [card_id] - Spawn random card or specific card
+16. /del [card_id_or_name] - Delete card by ID or Name
+17. /cardlist - View all cards
+18. /seelock - View Yugen cards lock status and drops (Admin only)
+19. /glist - View groups list
+20. /stats - View stats
+21. /broadcast - Broadcast message
+22. /check [user_id] - Check user profile info
+23. /mute [id] [time] [reason] - Mute user from bot usage
+24. /ban [id] [reason] - Ban user from bot usage
+25. /umute [id] - Unmute user from bot usage
+26. /unban [id] - Unban user from bot usage"""
 
     await update.message.reply_text(text, parse_mode="HTML", reply_to_message_id=msg_id)
 
@@ -1611,7 +1710,7 @@ async def check_user_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if not context.args:
-        return await msg.reply_text("❌ Usage: `/check [user_id]`", parse_mode="Markdown", reply_to_message_id=msg_id)
+        return await msg.reply_text("❌ Usage: `/check [user_id]`", parse_mode="Markdown", reply_to_message_id=msg.message_id)
 
     try:
         target_id = int(context.args[0])
@@ -1782,8 +1881,6 @@ async def kgtop_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = "\n".join(lines)
     await update.message.reply_text(text, parse_mode="HTML", reply_to_message_id=msg_id)
 
-
-# --- /kg Command Implementation (Daily Top Kachi Game) ---
 @restricted_command
 async def kg_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await check_force_join(update, context):
@@ -1794,12 +1891,10 @@ async def kg_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     async with db_pool.acquire() as conn:
         async with conn.transaction():
-            # Check daily reset and prize distribution
             setting_row = await conn.fetchrow("SELECT value FROM settings WHERE key = 'last_kg_reset' FOR UPDATE")
             last_kg_reset = int(setting_row['value']) if setting_row else 0
 
             if now - last_kg_reset >= cooldown:
-                # Distribute prizes to top 8 winners of previous day
                 top_winners = await conn.fetch("""
                     SELECT user_id, daily_kg_win FROM users 
                     WHERE daily_kg_win > 0 
@@ -1822,14 +1917,12 @@ async def kg_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     except Exception:
                         pass
 
-                # Reset daily wins and update last reset timestamp
                 await conn.execute("UPDATE users SET daily_kg_win = 0")
                 if setting_row:
                     await conn.execute("UPDATE settings SET value = $1 WHERE key = 'last_kg_reset'", str(now))
                 else:
                     await conn.execute("INSERT INTO settings (key, value) VALUES ('last_kg_reset', $1)", str(now))
 
-        # Fetch top 15 daily winners
         top_users = await conn.fetch("""
             SELECT user_id, name, daily_kg_win FROM users
             ORDER BY daily_kg_win DESC, coins DESC
@@ -1854,7 +1947,6 @@ async def kg_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     lines.append("▰▱▰▱▰▱▰▱▰▱▰")
     text = "\n".join(lines)
     await update.message.reply_text(text, parse_mode="HTML", reply_to_message_id=msg_id)
-
 
 @restricted_command
 async def admin_coin_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -2627,8 +2719,6 @@ async def klot_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     asyncio.create_task(run_klot_task(context.bot, chat.id, msg_id, user.id, display_name, bet_amount))
 
-
-# --- /kslot Command Implementation with Active Warning & All In ---
 @restricted_command
 async def kslot_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await check_force_join(update, context):
@@ -2639,7 +2729,6 @@ async def kslot_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg_id = msg.message_id
     await register_user_group(user, chat, context)
 
-    # Check active unfinished kslot
     if user.id in active_kslot_sessions:
         sess = active_kslot_sessions[user.id]
         chat_id_str = str(sess["chat_id"])
@@ -2678,7 +2767,6 @@ async def kslot_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if row:
         keyboard_rows.append(row)
     
-    # Add All In button
     keyboard_rows.append([InlineKeyboardButton("🔥 All In 🩸", callback_data=f"kslot_bet_{user.id}_allin")])
 
     text = f"""🎰 <b>Kachi Slot Machine Game</b>
@@ -2692,7 +2780,6 @@ async def kslot_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "message_id": sent_msg.message_id,
         "bet_amount": None
     }
-
 
 def decode_slot_dice(value):
     idx = value - 1
@@ -2720,7 +2807,6 @@ def decode_slot_dice(value):
         total_score += s_score
 
     return symbols, total_score
-
 
 async def run_kslot_task(bot, chat_id, query, user_id, display_name, bet_amount):
     try:
@@ -2803,8 +2889,6 @@ async def run_kslot_task(bot, chat_id, query, user_id, display_name, bet_amount)
     finally:
         pass
 
-
-# --- /kbox Command Implementation ---
 @restricted_command
 async def kbox_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await check_force_join(update, context):
@@ -3189,23 +3273,23 @@ async def card_detail_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if r == 'Birthday Special':
         coin_value = "5000-8000"
     elif r == 'Raiden':
-        coin_value = "30000-55000"
+        coin_value = "50000-69000"
     elif r == 'Kryora':
-        coin_value = "20000-38000"
+        coin_value = "35000-44800"
     elif r == 'Yugen':
-        coin_value = "4000-6000"
+        coin_value = "18000-28000"
     elif r == 'Shinsei':
-        coin_value = "2000-3000"
+        coin_value = "9000-15000"
     elif r == 'Kiwami':
-        coin_value = "1500-1900"
+        coin_value = "5000-7300"
     elif r == 'Kami':
-        coin_value = "800-1200"
+        coin_value = "4500-5700"
     elif r == 'Hoshi':
-        coin_value = "350-500"
+        coin_value = "1800-2800"
     elif r == 'Ten':
-        coin_value = "150-300"
+        coin_value = "1000-2500"
     else:
-        coin_value = "150-300"
+        coin_value = "1000-2500"
 
     caption_text = f"""🎗 Card Information ♡
 
@@ -3799,7 +3883,6 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await register_user_group(user, query.message.chat, context)
 
-    # --- Callbacks for /kslot ---
     if data.startswith("kslot_bet_"):
         parts = data.split("_")
         allowed_uid = int(parts[2])
@@ -3888,7 +3971,6 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.answer("🎯 Spin started!")
         asyncio.create_task(run_kslot_task(context.bot, chat_id, query, user.id, display_name, bet_amount))
         return
-    # ----------------------------
 
     if data.startswith("buy_confirm_"):
         parts = data.split("_")
@@ -3997,7 +4079,6 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.answer("🎉 Opening Kbox...")
         return
 
-    # --- Callbacks for /khmode ---
     if data.startswith("khset_"):
         parts = data.split("_")
         allowed_uid = int(parts[1])
@@ -4088,9 +4169,7 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             pass
         await query.answer("✅ Rarity mode updated successfully!")
         return
-    # -----------------------------
 
-    # --- Callbacks for /kshop ---
     if data.startswith("kshop_rarity_"):
         parts = data.split("_")
         allowed_uid = int(parts[2])
@@ -4178,7 +4257,6 @@ You can buy the highest-tier 🎀Birthday Special / 📓Raiden / 🦠Kryora / �
                 pass
         await query.answer()
         return
-    # ----------------------------
 
     if data == "aa_noop":
         return await query.answer("ℹ️ ဒါက အဖြေပြသသည့် ခလုတ်ဖြစ်ပါသည်။ အောက်နားရှိ အဖြေမှန်ရွေးရန် ခလုတ်ကို နှိပ်ပါ။", show_alert=True)
@@ -4653,10 +4731,12 @@ def main():
     app.add_handler(CommandHandler("kgtop", kgtop_cmd))
     app.add_handler(CommandHandler("kg", kg_cmd))
     app.add_handler(CommandHandler("ksearch", ksearch_cmd))
+    app.add_handler(CommandHandler("rede", rede_cmd))  # User Redeem Command
 
     # Admin Commands
     app.add_handler(CommandHandler("aa", aa_cmd))
     app.add_handler(CommandHandler("send", send_quiz_cmd))
+    app.add_handler(CommandHandler("kcode", kcode_cmd))  # Admin Code Creator Command
     app.add_handler(CommandHandler("cardlist", cardlist_cmd))
     app.add_handler(CommandHandler("seelock", seelock_cmd))
     app.add_handler(CommandHandler("admin", admin_cmd))
