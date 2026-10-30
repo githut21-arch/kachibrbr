@@ -65,9 +65,9 @@ async def init_db():
     global db_pool, global_default_threshold
     db_pool = await asyncpg.create_pool(
         DATABASE_URL, 
-        min_size=100, 
-        max_size=400, 
-        command_timeout=30
+        min_size=10, 
+        max_size=50, 
+        command_timeout=60
     )
     
     async with db_pool.acquire() as conn:
@@ -329,7 +329,7 @@ async def register_user_group(user, chat, context: ContextTypes.DEFAULT_TYPE = N
                     try:
                         await context.bot.send_message(
                             chat_id,
-                            "Bot အသုံးပြုအတွက်ကျေးဇူးအထူးတင်ပါတယ် Bot ကို Admin ပေးပါက Media ကောင်းကောင်းအလုပ်လုပ်ပါမည်。"
+                            "Bot အသုံးပြုအတွက်ကျေးဇူးအထူးတင်ပါတယ် Bot ကို Admin ပေးပါက Media ကောင်းကောင်းအလုပ်လုပ်ပါမည်။"
                         )
                     except Exception:
                         pass
@@ -1716,7 +1716,7 @@ async def ban_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if not context.args:
-        return await msg.reply_text("❌ Usage: `/ban [user_id] [reason]`", parse_mode="Markdown", reply_to_message_id=msg_id)
+        return await msg.reply_text("❌ Usage: `/ban [user_id] [reason]`", parse_mode="Markdown", reply_to_message_id=msg.message_id)
 
     try:
         target_id = int(context.args[0])
@@ -4933,5 +4933,5 @@ def main():
     print("🤖 Python Game Bot Running...")
     app.run_polling()
 
-if __name__ == "__1000" or __name__ == "__main__":
+if __name__ == "__main__":
     main()
