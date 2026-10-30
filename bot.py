@@ -47,7 +47,7 @@ kslot_cooldowns = {}
 kslot_is_cancelled = {}
 active_kslot_sessions = {}  # Track active/pending kslot sessions per user
 
-global_default_threshold = 60
+global_default_threshold = 80
 bot_warned_groups = set()
 
 # Anti-Spam Tracking Stores
@@ -99,7 +99,7 @@ async def init_db():
                 title TEXT,
                 added_by_id BIGINT,
                 added_by_name TEXT,
-                threshold INT DEFAULT 60,
+                threshold INT DEFAULT 80,
                 msg_count INT DEFAULT 0,
                 admin_warned BOOLEAN DEFAULT FALSE
             );
@@ -163,7 +163,7 @@ async def init_db():
             await conn.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS daily_kg_win BIGINT DEFAULT 0;")
             await conn.execute("ALTER TABLE groups ADD COLUMN IF NOT EXISTS added_by_id BIGINT;")
             await conn.execute("ALTER TABLE groups ADD COLUMN IF NOT EXISTS added_by_name TEXT;")
-            await conn.execute("ALTER TABLE groups ADD COLUMN IF NOT EXISTS threshold INT DEFAULT 60;")
+            await conn.execute("ALTER TABLE groups ADD COLUMN IF NOT EXISTS threshold INT DEFAULT 80;")
             await conn.execute("ALTER TABLE groups ADD COLUMN IF NOT EXISTS msg_count INT DEFAULT 0;")
             await conn.execute("ALTER TABLE groups ADD COLUMN IF NOT EXISTS admin_warned BOOLEAN DEFAULT FALSE;")
             await conn.execute("ALTER TABLE user_cards ADD COLUMN IF NOT EXISTS amount INT DEFAULT 1;")
@@ -202,7 +202,9 @@ async def init_db():
             global_default_threshold = int(thresh_row['value'])
 
 def get_rarity_emoji(r):
-    if r == 'Raiden':
+    if r == 'Beyond':
+        return "♠"
+    elif r == 'Raiden':
         return "📓"
     elif r == 'Kryora':
         return "🦠"
@@ -223,7 +225,9 @@ def get_rarity_emoji(r):
 
 def get_rarity_display(r):
     r_emoji = get_rarity_emoji(r)
-    if r == 'Birthday Special':
+    if r in ['Birthday Special', 'Beyond']:
+        if r == 'Beyond':
+            return f"{r_emoji} Beyond"
         return r_emoji
     return f"{r_emoji} {r}"
 
@@ -385,23 +389,20 @@ def get_mention(user_id, name):
     return f'<a href="tg://user?id={user_id}">{clean_name}</a>'
 
 async def get_weighted_random_card(conn):
-    all_cards = await conn.fetch("SELECT card_id, name, type, file_id, rarity, collection, is_locked FROM cards WHERE is_locked = FALSE AND rarity != 'Birthday Special'")
+    # Exclude Beyond and Birthday Special and Raiden and Kryora from regular drops/kbox
+    all_cards = await conn.fetch("SELECT card_id, name, type, file_id, rarity, collection, is_locked FROM cards WHERE is_locked = FALSE AND rarity NOT IN ('Birthday Special', 'Beyond', 'Raiden', 'Kryora')")
     if not all_cards:
-        all_cards = await conn.fetch("SELECT card_id, name, type, file_id, rarity, collection, is_locked FROM cards WHERE rarity != 'Birthday Special'")
+        all_cards = await conn.fetch("SELECT card_id, name, type, file_id, rarity, collection, is_locked FROM cards WHERE rarity NOT IN ('Birthday Special', 'Beyond', 'Raiden', 'Kryora')")
         if not all_cards:
             return None
     
     weights = []
     for c in all_cards:
         r = c.get('rarity', 'Ten')
-        if r == 'Raiden':
-            weights.append(1)
-        elif r == 'Kryora':
-            weights.append(1)
-        elif r == 'Yugen':
+        if r == 'Yugen':
             weights.append(1)
         elif r == 'Shinsei':
-            weights.append(1)
+            weights.append(10)
         elif r == 'Kiwami':
             weights.append(30)
         elif r == 'Kami':
@@ -511,27 +512,26 @@ async def pre_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     reply_to_message_id=msg_id
                 )
 
+            # Exclude Raiden, Kryora, Beyond, Birthday Special from /pre
             all_cards = await conn.fetch(
-                "SELECT card_id, name, type, file_id, rarity, collection, is_locked FROM cards WHERE rarity IN ('Raiden', 'Kryora', 'Shinsei', 'Kiwami', 'Kami', 'Hoshi', 'Ten') AND is_locked = FALSE"
+                "SELECT card_id, name, type, file_id, rarity, collection, is_locked FROM cards WHERE rarity IN ('Shinsei', 'Kiwami', 'Kami', 'Hoshi', 'Ten', 'Yugen') AND is_locked = FALSE"
             )
             if not all_cards:
                 all_cards = await conn.fetch(
-                    "SELECT card_id, name, type, file_id, rarity, collection, is_locked FROM cards WHERE rarity IN ('Raiden', 'Kryora', 'Shinsei', 'Kiwami', 'Kami', 'Hoshi', 'Ten')"
+                    "SELECT card_id, name, type, file_id, rarity, collection, is_locked FROM cards WHERE rarity IN ('Shinsei', 'Kiwami', 'Kami', 'Hoshi', 'Ten', 'Yugen')"
                 )
                 if not all_cards:
-                    all_cards = await conn.fetch("SELECT card_id, name, type, file_id, rarity, collection, is_locked FROM cards WHERE rarity != 'Birthday Special'")
+                    all_cards = await conn.fetch("SELECT card_id, name, type, file_id, rarity, collection, is_locked FROM cards WHERE rarity NOT IN ('Birthday Special', 'Beyond', 'Raiden', 'Kryora')")
                     if not all_cards:
                         return await msg.reply_text("❌ No cards available in database!", reply_to_message_id=msg_id)
 
             weights = []
             for c in all_cards:
                 r = c.get('rarity', 'Ten')
-                if r == 'Raiden':
-                    weights.append(1)
-                elif r == 'Kryora':
+                if r == 'Yugen':
                     weights.append(1)
                 elif r == 'Shinsei':
-                    weights.append(1)
+                    weights.append(10)
                 elif r == 'Kiwami':
                     weights.append(30)
                 elif r == 'Kami':
@@ -563,11 +563,7 @@ async def pre_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     r_display = get_rarity_display(r)
     col_name = card.get('collection') or "🎞 Ope Ope No Mi [ 🩺]"
 
-    if r == 'Raiden':
-        coin_value = "50000-69000"
-    elif r == 'Kryora':
-        coin_value = "35000-44800"
-    elif r == 'Yugen':
+    if r == 'Yugen':
         coin_value = "18000-28000"
     elif r == 'Shinsei':
         coin_value = "9000-15000"
@@ -943,7 +939,9 @@ async def ksellcard_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 else:
                     item_coins_total = 0
                     for _ in range(req_amount):
-                        if rarity == 'Birthday Special':
+                        if rarity == 'Beyond':
+                            item_coins_total += random.randint(100000, 150000)
+                        elif rarity == 'Birthday Special':
                             item_coins_total += random.randint(4000, 6000)
                         elif rarity == 'Raiden':
                             item_coins_total += random.randint(50000, 69000)
@@ -1056,13 +1054,13 @@ async def kdaily_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     reply_to_message_id=msg_id
                 )
 
-            new_coins = current_coins + 600
+            new_coins = current_coins + 1000
             await conn.execute("UPDATE users SET coins = $1, last_kdaily = $2 WHERE user_id = $3", new_coins, now, user.id)
 
     await msg.reply_text(
         f"🎁 <b>Daily Kachi Claimed Successfully!</b>\n\n"
         f"👤 User: {get_mention(user.id, display_name)}\n"
-        f"💎 Reward: <b>+600 Kachi</b> 🩸\n"
+        f"💎 Reward: <b>+1000 Kachi</b> 🩸\n"
         f"💰 Total Balance: <b>{new_coins}</b> Kachi\n\n"
         f"<i>ကျေးဇူးတင်ပါတယ်! မနက်ဖြန်လည်း ထပ်မံလာရောက် ထုတ်ယူနိုင်ပါပြီ ✨</i>",
         parse_mode="HTML",
@@ -1255,7 +1253,7 @@ async def spw_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
             if not card:
                 return await update.message.reply_text(f"❌ Card ID <code>{target_id}</code> not found in database.", parse_mode="HTML", reply_to_message_id=msg_id)
         else:
-            cards = await conn.fetch("SELECT card_id, name, type, file_id, rarity, collection FROM cards WHERE rarity != 'Birthday Special'")
+            cards = await conn.fetch("SELECT card_id, name, type, file_id, rarity, collection FROM cards WHERE rarity NOT IN ('Birthday Special', 'Beyond')")
             if not cards:
                 return await update.message.reply_text("❌ No cards available in database!", reply_to_message_id=msg_id)
             card = random.choice(cards)
@@ -1625,7 +1623,7 @@ async def admin_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 10. /badmin [user_id] - Set Card Buyer
 11. /buy [seller_id] [card_id] ... - Buy cards from user (removes from seller)
 12. /got [card_id] - Get card directly to your inventory (Admin only)
-13. /add - Add new card (reply to media) / /add [user_id] for Birthday Special card
+13. /add - Add new card (reply to media) / /add [user_id] for Birthday Special / Beyond card
 14. /unlock [card_id/all] - Unlock Yugen, locked card, or all cards
 15. /lock [card_id/all] - Lock card or all cards
 16. /spw [card_id] - Spawn random card or specific card
@@ -1889,13 +1887,13 @@ async def crest_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     global global_default_threshold
     group_threshold.clear()
-    global_default_threshold = 60
+    global_default_threshold = 80
 
     async with db_pool.acquire() as conn:
-        await conn.execute("UPDATE groups SET threshold = 60, msg_count = 0")
+        await conn.execute("UPDATE groups SET threshold = 80, msg_count = 0")
         await conn.execute("DELETE FROM settings WHERE key = 'default_threshold'")
 
-    await update.message.reply_text("✅ All group thresholds and message counts have been reset to default (60). Card drops will only trigger when new message thresholds are met.", parse_mode="HTML", reply_to_message_id=msg_id)
+    await update.message.reply_text("✅ All group thresholds and message counts have been reset to default (80). Card drops will only trigger when new message thresholds are met.", parse_mode="HTML", reply_to_message_id=msg_id)
 
 @restricted_command
 async def ktop_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -2086,34 +2084,110 @@ async def add_card_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     reply = update.message.reply_to_message
     if not reply or (not reply.photo and not reply.video):
-        return await update.message.reply_text("❌ Reply to a photo or video with `/add [name]` or `/add [user_id]` (for Birthday Special)", parse_mode="Markdown", reply_to_message_id=msg_id)
+        return await update.message.reply_text("❌ Reply to a photo or video with `/add [name]` or `/add [user_id]` (for Birthday Special / Beyond)", parse_mode="Markdown", reply_to_message_id=msg_id)
 
     raw_args = update.message.text.partition(" ")[2].strip()
     if not raw_args:
         return await update.message.reply_text("❌ Usage: Reply to media with `/add [name]` or `/add [user_id]`", parse_mode="Markdown", reply_to_message_id=msg_id)
 
     is_birthday_add = False
+    is_beyond_add = False
     target_user_id = None
     custom_card_id = None
 
     space_parts = raw_args.split()
     dot_parts = [p.strip() for p in raw_args.split(".")]
 
-    if raw_args.isdigit() and len(raw_args) >= 8:
+    if raw_args.lower() == "beyond":
+        is_beyond_add = True
+    elif raw_args.isdigit() and len(raw_args) >= 8:
         is_birthday_add = True
         target_user_id = int(raw_args)
-    elif len(space_parts) == 2 and space_parts[0].isdigit() and space_parts[1].isdigit():
+    elif len(space_parts) == 2 and (space_parts[0].isdigit() and len(space_parts[0]) >= 8 or space_parts[1].isdigit() and len(space_parts[1]) >= 8):
+        is_birthday_add = True
         p1, p2 = space_parts[0], space_parts[1]
-        if len(p1) >= 8 or len(p2) >= 8:
-            is_birthday_add = True
-            target_user_id = int(p1) if len(p1) >= 8 else int(p2)
-            custom_card_id = p2 if len(p1) >= 8 else p1
+        target_user_id = int(p1) if len(p1) >= 8 else int(p2)
+        custom_card_id = p2 if len(p1) >= 8 else p1
+    elif len(space_parts) == 2 and space_parts[0].lower() == "beyond":
+        is_beyond_add = True
+        custom_card_id = space_parts[1]
     elif len(dot_parts) == 2 and dot_parts[0].isdigit() and dot_parts[1].isdigit():
         p1, p2 = dot_parts[0], dot_parts[1]
         if len(p1) >= 8 or len(p2) >= 8:
             is_birthday_add = True
             target_user_id = int(p1) if len(p1) >= 8 else int(p2)
             custom_card_id = p2 if len(p1) >= 8 else p1
+
+    if is_beyond_add:
+        if user.id != ADMIN_ID:
+            return await update.message.reply_text("❌ Only the Bot Admin can add ♠Beyond rarity cards!", reply_to_message_id=msg_id)
+        
+        card_name = f"♠Beyond"
+        rarity = "Beyond"
+
+        if custom_card_id:
+            card_id = custom_card_id
+            async with db_pool.acquire() as conn:
+                existing_c = await conn.fetchrow("SELECT card_id FROM cards WHERE card_id = $1", card_id)
+                if existing_c:
+                    return await update.message.reply_text(f"⚠️ Card ID (<code>{card_id}</code>) already exists.", parse_mode="HTML", reply_to_message_id=msg_id)
+        else:
+            async with db_pool.acquire() as conn:
+                while True:
+                    rand_id = str(random.randint(1000, 9999))
+                    exists = await conn.fetchrow("SELECT card_id FROM cards WHERE card_id = $1", rand_id)
+                    if not exists:
+                        card_id = rand_id
+                        break
+
+        if reply.photo:
+            file_id = reply.photo[-1].file_id
+            c_type = "photo"
+        else:
+            file_id = reply.video.file_id
+            c_type = "video"
+
+        collections_list = [
+            "🎞 Ope Ope No Mi [ 🩺]",
+            "🎞 Hito Hito No Mi [🌕]",
+            "🎞 Mera Mera No Mi [🔥]",
+            "🎞 Hana Hana No Mi [🌸]",
+            "🎞 Yomi Yomi No Mi [💀]",
+            "🎞 Tori Tori No Mi [🦅]",
+            "🎞 Yami Yami No Mi [🌑]"
+        ]
+        selected_collection = random.choice(collections_list)
+
+        async with db_pool.acquire() as conn:
+            async with conn.transaction():
+                await conn.execute("""
+                    INSERT INTO cards (card_id, name, type, file_id, rarity, collection, is_locked)
+                    VALUES ($1, $2, $3, $4, $5, $6, TRUE)
+                """, card_id, card_name, c_type, file_id, rarity, selected_collection)
+
+        r_display = get_rarity_display(rarity)
+        log_text = f"""New ♠Beyond card added successfully
+
+❀ Card Name : {card_name}
+     ❝  ID : {card_id}
+❀ Type : {c_type.capitalize()}
+🌟 Rarity : {r_display}
+📚 Collection : {selected_collection}
+👤 Added By : {get_mention(user.id, user.first_name)}"""
+
+        try:
+            if c_type == "photo":
+                asyncio.create_task(context.bot.send_photo(chat_id=LOG_CHANNEL_ID, photo=file_id, caption=log_text, parse_mode="HTML"))
+            else:
+                asyncio.create_task(context.bot.send_video(chat_id=LOG_CHANNEL_ID, video=file_id, caption=log_text, parse_mode="HTML"))
+        except Exception:
+            pass
+
+        return await update.message.reply_text(
+            f"✅ ♠Beyond rarity card added successfully (Locked by default, Admin sales only)!\n\n🆔 Card ID: <code>{card_id}</code>\n🎴 Name: {card_name}\n🌟 Rarity: {r_display}\n📚 Collection: {selected_collection}",
+            parse_mode="HTML",
+            reply_to_message_id=msg_id
+        )
 
     if is_birthday_add:
         if user.id != ADMIN_ID:
@@ -2243,10 +2317,6 @@ async def add_card_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     keyboard = InlineKeyboardMarkup([
         [
-            InlineKeyboardButton("📓 Raiden", callback_data=f"addrarity_{user.id}_Raiden"),
-            InlineKeyboardButton("🦠 Kryora", callback_data=f"addrarity_{user.id}_Kryora")
-        ],
-        [
             InlineKeyboardButton("🎐 Yugen", callback_data=f"addrarity_{user.id}_Yugen"),
             InlineKeyboardButton("🧬 Shinsei", callback_data=f"addrarity_{user.id}_Shinsei")
         ],
@@ -2340,6 +2410,10 @@ async def khmode_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = "🎯 <b>Select Rarity Mode for /kc</b>\n\nကျေးဇူးပြု၍ စုပြလိုသော Rarity တစ်ခုကို ရွေးချယ်ပေးပါ -"
     keyboard = InlineKeyboardMarkup([
         [
+            InlineKeyboardButton("♠ Beyond", callback_data=f"khset_{user.id}_Beyond"),
+            InlineKeyboardButton("🎀 Birthday Special", callback_data=f"khset_{user.id}_Birthday Special")
+        ],
+        [
             InlineKeyboardButton("📓 Raiden", callback_data=f"khset_{user.id}_Raiden"),
             InlineKeyboardButton("🦠 Kryora", callback_data=f"khset_{user.id}_Kryora")
         ],
@@ -2354,9 +2428,6 @@ async def khmode_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         [
             InlineKeyboardButton("⚜️ Hoshi", callback_data=f"khset_{user.id}_Hoshi"),
             InlineKeyboardButton("💮 Ten", callback_data=f"khset_{user.id}_Ten")
-        ],
-        [
-            InlineKeyboardButton("🎀 Birthday Special", callback_data=f"khset_{user.id}_Birthday Special")
         ]
     ])
     await update.message.reply_text(text, parse_mode="HTML", reply_markup=keyboard, reply_to_message_id=msg_id)
@@ -2386,19 +2457,22 @@ async def kshop_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await register_user_group(user, chat, context)
 
     text = f"""Hello {user.first_name}
-You can buy the highest-tier 🎀Birthday Special / 📓Raiden / 🦠Kryora / 🎐Yugen / 🧬Shinsei / 🪞 Kiwami rarity cards here"""
+You can buy the highest-tier ♠Beyond / 🎀Birthday Special / 📓Raiden / 🦠Kryora / 🎐Yugen / 🧬Shinsei / 🪞 Kiwami rarity cards here"""
 
     keyboard = InlineKeyboardMarkup([
         [
-            InlineKeyboardButton("🎀 Birthday Special", callback_data=f"kshop_rarity_{user.id}_Birthday Special"),
-            InlineKeyboardButton("📓 Raiden", callback_data=f"kshop_rarity_{user.id}_Raiden")
+            InlineKeyboardButton("♠ Beyond", callback_data=f"kshop_rarity_{user.id}_Beyond"),
+            InlineKeyboardButton("🎀 Birthday Special", callback_data=f"kshop_rarity_{user.id}_Birthday Special")
         ],
         [
-            InlineKeyboardButton("🦠 Kryora", callback_data=f"kshop_rarity_{user.id}_Kryora"),
-            InlineKeyboardButton("🎐 Yugen", callback_data=f"kshop_rarity_{user.id}_Yugen")
+            InlineKeyboardButton("📓 Raiden", callback_data=f"kshop_rarity_{user.id}_Raiden"),
+            InlineKeyboardButton("🦠 Kryora", callback_data=f"kshop_rarity_{user.id}_Kryora")
         ],
         [
-            InlineKeyboardButton("🧬 Shinsei", callback_data=f"kshop_rarity_{user.id}_Shinsei"),
+            InlineKeyboardButton("🎐 Yugen", callback_data=f"kshop_rarity_{user.id}_Yugen"),
+            InlineKeyboardButton("🧬 Shinsei", callback_data=f"kshop_rarity_{user.id}_Shinsei")
+        ],
+        [
             InlineKeyboardButton("🪞 Kiwami", callback_data=f"kshop_rarity_{user.id}_Kiwami")
         ]
     ])
@@ -2416,7 +2490,9 @@ async def render_kshop_card(query, context, user_id, rarity, index):
     
     price_key = (user_id, card['card_id'])
     if price_key not in kshop_prices:
-        if rarity == 'Birthday Special':
+        if rarity == 'Beyond':
+            kshop_prices[price_key] = random.randint(100000, 150000)
+        elif rarity == 'Birthday Special':
             kshop_prices[price_key] = random.randint(4000, 6000)
         elif rarity == 'Raiden':
             kshop_prices[price_key] = random.randint(50000, 69000)
@@ -3058,10 +3134,10 @@ async def kbox_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 reply_to_message_id=msg_id
             )
 
-        if coins < 300:
-            return await msg.reply_text(f"❌ Insufficient Kachi! You need 300 Kachi (Current: {coins}).", reply_to_message_id=msg_id)
+        if coins < 1000:
+            return await msg.reply_text(f"❌ Insufficient Kachi! You need 1000 Kachi (Current: {coins}).", reply_to_message_id=msg_id)
 
-    text = "Welcome To Kbox 💤\nLet's Open 🔫"
+    text = "Welcome To Kbox 💤\nLet's Open 🔫 (Cost: 1000 Kachi)"
     keyboard = InlineKeyboardMarkup([
         [InlineKeyboardButton("OPEN", callback_data=f"kbox_open_{user.id}")]
     ])
@@ -3387,7 +3463,9 @@ async def card_detail_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     col_name = card.get('collection') or "🎞 Ope Ope No Mi [ 🩺]"
     lock_str = "\n🔒 <b>Status: Locked</b>" if card.get('is_locked') else ""
 
-    if r == 'Birthday Special':
+    if r == 'Beyond':
+        coin_value = "100000-150000"
+    elif r == 'Birthday Special':
         coin_value = "5000-8000"
     elif r == 'Raiden':
         coin_value = "50000-69000"
@@ -3729,7 +3807,7 @@ Status: Successful ✅
                         ON CONFLICT (chat_id) DO UPDATE SET title = COALESCE($2, groups.title)
                     """, chat_id, chat.title or "Group")
                     
-                    threshold = 60
+                    threshold = 80
 
                     row = await conn.fetchrow("""
                         UPDATE groups 
@@ -4184,11 +4262,11 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     active_kbox_users.discard(user.id)
                     return await query.answer("❌ /kbox ကို တစ်နေ့လျှင် 7 ကြိမ်သာ ဖွင့်လှစ်နိုင်ပါတော့သည်။", show_alert=True)
 
-                if current_coins < 300:
+                if current_coins < 1000:
                     active_kbox_users.discard(user.id)
-                    return await query.answer(f"❌ Insufficient Kachi! You need 300 Kachi (Current: {current_coins}).", show_alert=True)
+                    return await query.answer(f"❌ Insufficient Kachi! You need 1000 Kachi (Current: {current_coins}).", show_alert=True)
 
-                new_balance = current_coins - 300
+                new_balance = current_coins - 1000
                 kbox_count += 1
                 await conn.execute("UPDATE users SET coins = $1, kbox_count = $2, last_kbox_reset = $3 WHERE user_id = $4", new_balance, kbox_count, last_kbox_reset, user.id)
 
@@ -4240,6 +4318,10 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         text = "🎯 <b>Select Rarity Mode for /kc</b>\n\nကျေးဇူးပြု၍ စုပြလိုသော Rarity တစ်ခုကို ရွေးချယ်ပေးပါ -"
         keyboard = InlineKeyboardMarkup([
             [
+                InlineKeyboardButton("♠ Beyond", callback_data=f"khset_{user.id}_Beyond"),
+                InlineKeyboardButton("🎀 Birthday Special", callback_data=f"khset_{user.id}_Birthday Special")
+            ],
+            [
                 InlineKeyboardButton("📓 Raiden", callback_data=f"khset_{user.id}_Raiden"),
                 InlineKeyboardButton("🦠 Kryora", callback_data=f"khset_{user.id}_Kryora")
             ],
@@ -4254,9 +4336,6 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             [
                 InlineKeyboardButton("⚜️ Hoshi", callback_data=f"khset_{user.id}_Hoshi"),
                 InlineKeyboardButton("💮 Ten", callback_data=f"khset_{user.id}_Ten")
-            ],
-            [
-                InlineKeyboardButton("🎀 Birthday Special", callback_data=f"khset_{user.id}_Birthday Special")
             ]
         ])
         try:
@@ -4350,18 +4429,21 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return await query.answer("❌ This is not for you!", show_alert=True)
 
         text = f"""Hello {user.first_name}
-You can buy the highest-tier 🎀Birthday Special / 📓Raiden / 🦠Kryora / 🎐Yugen / 🧬Shinsei / 🪞 Kiwami rarity cards here"""
+You can buy the highest-tier ♠Beyond / 🎀Birthday Special / 📓Raiden / 🦠Kryora / 🎐Yugen / 🧬Shinsei / 🪞 Kiwami rarity cards here"""
         keyboard = InlineKeyboardMarkup([
             [
-                InlineKeyboardButton("🎀 Birthday Special", callback_data=f"kshop_rarity_{user.id}_Birthday Special"),
-                InlineKeyboardButton("📓 Raiden", callback_data=f"kshop_rarity_{user.id}_Raiden")
+                InlineKeyboardButton("♠ Beyond", callback_data=f"kshop_rarity_{user.id}_Beyond"),
+                InlineKeyboardButton("🎀 Birthday Special", callback_data=f"kshop_rarity_{user.id}_Birthday Special")
             ],
             [
-                InlineKeyboardButton("🦠 Kryora", callback_data=f"kshop_rarity_{user.id}_Kryora"),
-                InlineKeyboardButton("🎐 Yugen", callback_data=f"kshop_rarity_{user.id}_Yugen")
+                InlineKeyboardButton("📓 Raiden", callback_data=f"kshop_rarity_{user.id}_Raiden"),
+                InlineKeyboardButton("🦠 Kryora", callback_data=f"kshop_rarity_{user.id}_Kryora")
             ],
             [
-                InlineKeyboardButton("🧬 Shinsei", callback_data=f"kshop_rarity_{user.id}_Shinsei"),
+                InlineKeyboardButton("🎐 Yugen", callback_data=f"kshop_rarity_{user.id}_Yugen"),
+                InlineKeyboardButton("🧬 Shinsei", callback_data=f"kshop_rarity_{user.id}_Shinsei")
+            ],
+            [
                 InlineKeyboardButton("🪞 Kiwami", callback_data=f"kshop_rarity_{user.id}_Kiwami")
             ]
         ])
@@ -4557,9 +4639,6 @@ user တစ်ဦး၏ စာကို reply လုပ်၍ အောက်ပ
         if user.id != allowed_uid:
             return await query.answer("❌ Not for you.", show_alert=True)
 
-        if rarity in ['Birthday Special', 'Raiden'] and user.id != ADMIN_ID:
-            return await query.answer(f"❌ Only the Bot Admin can add {rarity} rarity cards!", show_alert=True)
-
         card_info = pending_card_adds.get(user.id)
         if card_info:
             del pending_card_adds[user.id]
@@ -4586,7 +4665,7 @@ user တစ်ဦး၏ စာကို reply လုပ်၍ အောက်ပ
         file_id = card_info["file_id"]
         is_card_admin = card_info["is_card_admin"]
         
-        is_locked = True if rarity == 'Raiden' else False
+        is_locked = False
 
         async with db_pool.acquire() as conn:
             async with conn.transaction():
@@ -4595,7 +4674,7 @@ user တစ်ဦး၏ စာကို reply လုပ်၍ အောက်ပ
                     VALUES ($1, $2, $3, $4, $5, $6, $7)
                 """, card_id, card_name, c_type, file_id, rarity, selected_collection, is_locked)
 
-                added_reward_coins = 50 if rarity in ["Hoshi", "Ten"] else (80 if rarity in ["Kiwami", "Kami"] else (120 if rarity in ['Shinsei', 'Kryora'] else 150))
+                added_reward_coins = 50 if rarity in ["Hoshi", "Ten"] else (80 if rarity in ["Kiwami", "Kami"] else (120 if rarity in ['Shinsei', 'Yugen'] else 150))
 
                 if is_card_admin and user.id != ADMIN_ID:
                     await conn.execute("""
@@ -4605,7 +4684,7 @@ user တစ်ဦး၏ စာကို reply လုပ်၍ အောက်ပ
                     """, added_reward_coins, user.id)
 
         r_display = get_rarity_display(rarity)
-        lock_msg_note = "\n🔒 <i>Status: Locked (Will not drop until /unlock is used)</i>" if is_locked else ""
+        lock_msg_note = ""
         log_text = f"""New card added successfully
 
 ❀ Card Name : {card_name}
