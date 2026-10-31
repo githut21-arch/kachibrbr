@@ -49,6 +49,12 @@ active_kslot_sessions = {}  # Track active/pending kslot sessions per user
 global_default_threshold = 80
 bot_warned_groups = set()
 
+# Short cache for successful force-join checks. This avoids a Telegram
+# getChatMember network round-trip on every command while keeping membership
+# changes reasonably fresh.
+force_join_cache = {}
+FORCE_JOIN_CACHE_TTL = 45
+
 # Anti-Spam Tracking Stores
 user_message_timestamps = {}
 spam_ignores = {}
@@ -451,13 +457,23 @@ async def check_force_join(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         return True
     if user.id == ADMIN_ID:
         return True
-    
+
+    now = time.monotonic()
+    cached_until = force_join_cache.get(user.id, 0)
+    if cached_until > now:
+        return True
+
     try:
         member = await context.bot.get_chat_member(chat_id="@beyondpoe", user_id=user.id)
-        if member.status in ['left', 'kicked']:
-            raise Exception("Not joined")
+        if member.status in ["left", "kicked"]:
+            force_join_cache.pop(user.id, None)
+            raise ValueError("User has not joined the required channel")
+
+        # Cache only a confirmed membership; never cache API errors or non-members.
+        force_join_cache[user.id] = now + FORCE_JOIN_CACHE_TTL
         return True
-    except Exception:
+
+    except ValueError:
         text = f"🐠 Hello {get_mention(user.id, user.first_name)}, please join our channel to use the bot 🩸"
         keyboard = InlineKeyboardMarkup([
             [InlineKeyboardButton("Join Channel 📢", url="https://t.me/beyondpoe")],
@@ -465,14 +481,39 @@ async def check_force_join(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         ])
         if update.message:
             try:
-                await update.message.reply_text(text, parse_mode="HTML", reply_markup=keyboard, reply_to_message_id=update.message.message_id)
-            except Exception:
-                pass
+                await update.message.reply_text(
+                    text, parse_mode="HTML", reply_markup=keyboard,
+                    reply_to_message_id=update.message.message_id
+                )
+            except Exception as e:
+                print(f"Force-join reply failed: {e}")
         elif update.callback_query:
             try:
-                await update.callback_query.answer("❌ Please join the channel first.", show_alert=True)
-            except Exception:
-                pass
+                await update.callback_query.answer(
+                    "❌ Please join the channel first.", show_alert=True
+                )
+            except Exception as e:
+                print(f"Force-join callback answer failed: {e}")
+        return False
+
+    except Exception as e:
+        # Do not misreport a Telegram/network failure as "not joined".
+        print(f"Force-join check failed for user {user.id}: {e}")
+        if update.message:
+            try:
+                await update.message.reply_text(
+                    "⚠️ Membership check is temporarily unavailable. Please try again shortly.",
+                    reply_to_message_id=update.message.message_id
+                )
+            except Exception as reply_error:
+                print(f"Force-join temporary-error reply failed: {reply_error}")
+        elif update.callback_query:
+            try:
+                await update.callback_query.answer(
+                    "⚠️ Please try again shortly.", show_alert=True
+                )
+            except Exception as answer_error:
+                print(f"Force-join temporary-error answer failed: {answer_error}")
         return False
 
 async def check_main_group_restriction(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
