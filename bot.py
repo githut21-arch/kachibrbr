@@ -49,12 +49,6 @@ active_kslot_sessions = {}  # Track active/pending kslot sessions per user
 global_default_threshold = 80
 bot_warned_groups = set()
 
-# Short cache for successful force-join checks. This avoids a Telegram
-# getChatMember network round-trip on every command while keeping membership
-# changes reasonably fresh.
-force_join_cache = {}
-FORCE_JOIN_CACHE_TTL = 45
-
 # Anti-Spam Tracking Stores
 user_message_timestamps = {}
 spam_ignores = {}
@@ -268,11 +262,80 @@ def get_rarity_display(r):
         return r_emoji
     return f"{r_emoji} {r}"
 
+# Rarity probabilities used only by /pre and /kbox.
+PRE_KBOX_RARITY_WEIGHTS = {
+    "Ten": 45,
+    "Hoshi": 25,
+    "Kami": 14,
+    "Kiwami": 8,
+    "Shinsei": 5,
+    "Yugen": 2,
+    "Kryora": 1,
+}
+USER_CARD_MAX_PER_ID = 3
+
+
+async def get_pre_kbox_weighted_card(conn, user_id):
+    """Pick by rarity probability, then uniformly among eligible cards of that rarity."""
+    rows = await conn.fetch("""
+        SELECT c.card_id, c.name, c.type, c.file_id, c.rarity, c.collection, c.is_locked,
+               COALESCE(uc.amount, 0) AS owned_amount
+        FROM cards c
+        LEFT JOIN user_cards uc
+          ON uc.card_id = c.card_id AND uc.user_id = $1
+        WHERE c.rarity = ANY($2::text[])
+          AND COALESCE(uc.amount, 0) < $3
+          AND c.is_locked = FALSE
+    """, user_id, list(PRE_KBOX_RARITY_WEIGHTS.keys()), USER_CARD_MAX_PER_ID)
+
+    # Preserve the existing fallback behavior when every eligible card is locked.
+    if not rows:
+        rows = await conn.fetch("""
+            SELECT c.card_id, c.name, c.type, c.file_id, c.rarity, c.collection, c.is_locked,
+                   COALESCE(uc.amount, 0) AS owned_amount
+            FROM cards c
+            LEFT JOIN user_cards uc
+              ON uc.card_id = c.card_id AND uc.user_id = $1
+            WHERE c.rarity = ANY($2::text[])
+              AND COALESCE(uc.amount, 0) < $3
+        """, user_id, list(PRE_KBOX_RARITY_WEIGHTS.keys()), USER_CARD_MAX_PER_ID)
+
+    if not rows:
+        return None
+
+    available_by_rarity = {}
+    for row in rows:
+        available_by_rarity.setdefault(row["rarity"] or "Ten", []).append(row)
+
+    rarities = list(available_by_rarity.keys())
+    weights = [PRE_KBOX_RARITY_WEIGHTS.get(rarity, 1) for rarity in rarities]
+    selected_rarity = random.choices(rarities, weights=weights, k=1)[0]
+    return random.choice(available_by_rarity[selected_rarity])
+
+
+async def add_user_card_with_limit(conn, user_id, card_id, amount=1):
+    """Atomically add cards only if the user's resulting amount will not exceed 3."""
+    if amount < 1 or amount > USER_CARD_MAX_PER_ID:
+        return False
+    result = await conn.fetchrow("""
+        INSERT INTO user_cards (user_id, card_id, amount)
+        VALUES ($1, $2, $3)
+        ON CONFLICT (user_id, card_id) DO UPDATE
+        SET amount = user_cards.amount + EXCLUDED.amount
+        WHERE user_cards.amount + EXCLUDED.amount <= $4
+        RETURNING amount
+    """, user_id, card_id, amount, USER_CARD_MAX_PER_ID)
+    return result is not None
+
+
 async def check_and_auto_lock_card(conn, card_id):
+    # Kryora cards become locked after 30 total copies have been distributed.
     card_info = await conn.fetchrow("SELECT rarity, is_locked FROM cards WHERE card_id = $1", card_id)
-    if card_info and card_info['rarity'] == 'Yugen' and not card_info['is_locked']:
-        total_drops = await conn.fetchval("SELECT COALESCE(SUM(amount), 0) FROM user_cards WHERE card_id = $1", card_id)
-        if total_drops >= 25:
+    if card_info and card_info['rarity'] == 'Kryora' and not card_info['is_locked']:
+        total_copies = await conn.fetchval(
+            "SELECT COALESCE(SUM(amount), 0) FROM user_cards WHERE card_id = $1", card_id
+        )
+        if total_copies >= 30:
             await conn.execute("UPDATE cards SET is_locked = TRUE WHERE card_id = $1", card_id)
 
 def restricted_command(func):
@@ -457,23 +520,13 @@ async def check_force_join(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         return True
     if user.id == ADMIN_ID:
         return True
-
-    now = time.monotonic()
-    cached_until = force_join_cache.get(user.id, 0)
-    if cached_until > now:
-        return True
-
+    
     try:
         member = await context.bot.get_chat_member(chat_id="@beyondpoe", user_id=user.id)
-        if member.status in ["left", "kicked"]:
-            force_join_cache.pop(user.id, None)
-            raise ValueError("User has not joined the required channel")
-
-        # Cache only a confirmed membership; never cache API errors or non-members.
-        force_join_cache[user.id] = now + FORCE_JOIN_CACHE_TTL
+        if member.status in ['left', 'kicked']:
+            raise Exception("Not joined")
         return True
-
-    except ValueError:
+    except Exception:
         text = f"🐠 Hello {get_mention(user.id, user.first_name)}, please join our channel to use the bot 🩸"
         keyboard = InlineKeyboardMarkup([
             [InlineKeyboardButton("Join Channel 📢", url="https://t.me/beyondpoe")],
@@ -481,39 +534,14 @@ async def check_force_join(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         ])
         if update.message:
             try:
-                await update.message.reply_text(
-                    text, parse_mode="HTML", reply_markup=keyboard,
-                    reply_to_message_id=update.message.message_id
-                )
-            except Exception as e:
-                print(f"Force-join reply failed: {e}")
+                await update.message.reply_text(text, parse_mode="HTML", reply_markup=keyboard, reply_to_message_id=update.message.message_id)
+            except Exception:
+                pass
         elif update.callback_query:
             try:
-                await update.callback_query.answer(
-                    "❌ Please join the channel first.", show_alert=True
-                )
-            except Exception as e:
-                print(f"Force-join callback answer failed: {e}")
-        return False
-
-    except Exception as e:
-        # Do not misreport a Telegram/network failure as "not joined".
-        print(f"Force-join check failed for user {user.id}: {e}")
-        if update.message:
-            try:
-                await update.message.reply_text(
-                    "⚠️ Membership check is temporarily unavailable. Please try again shortly.",
-                    reply_to_message_id=update.message.message_id
-                )
-            except Exception as reply_error:
-                print(f"Force-join temporary-error reply failed: {reply_error}")
-        elif update.callback_query:
-            try:
-                await update.callback_query.answer(
-                    "⚠️ Please try again shortly.", show_alert=True
-                )
-            except Exception as answer_error:
-                print(f"Force-join temporary-error answer failed: {answer_error}")
+                await update.callback_query.answer("❌ Please join the channel first.", show_alert=True)
+            except Exception:
+                pass
         return False
 
 async def check_main_group_restriction(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
@@ -584,40 +612,19 @@ async def pre_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
                     reply_to_message_id=msg_id
                 )
 
-            all_cards = await conn.fetch(
-                "SELECT card_id, name, type, file_id, rarity, collection, is_locked FROM cards WHERE rarity IN ('Shinsei', 'Kiwami', 'Kami', 'Hoshi', 'Ten', 'Yugen') AND is_locked = FALSE"
-            )
-            if not all_cards:
-                all_cards = await conn.fetch(
-                    "SELECT card_id, name, type, file_id, rarity, collection, is_locked FROM cards WHERE rarity IN ('Shinsei', 'Kiwami', 'Kami', 'Hoshi', 'Ten', 'Yugen')"
+            card = await get_pre_kbox_weighted_card(conn, user.id)
+            if not card:
+                return await msg.reply_text(
+                    "❌ No eligible cards available. You may already own 3 copies of every available card.",
+                    reply_to_message_id=msg_id
                 )
-                if not all_cards:
-                    all_cards = await conn.fetch("SELECT card_id, name, type, file_id, rarity, collection, is_locked FROM cards WHERE rarity NOT IN ('Birthday Special', 'Beyond', 'Raiden', 'Kryora')")
-                    if not all_cards:
-                        return await msg.reply_text("❌ No cards available in database!", reply_to_message_id=msg_id)
 
-            weights = []
-            for c in all_cards:
-                r = c.get('rarity', 'Ten')
-                if r == 'Yugen':
-                    weights.append(1)
-                elif r == 'Shinsei':
-                    weights.append(10)
-                elif r == 'Kiwami':
-                    weights.append(30)
-                elif r == 'Kami':
-                    weights.append(30)
-                elif r == 'Hoshi':
-                    weights.append(30)
-                else:
-                    weights.append(30)
-
-            card = random.choices(all_cards, weights=weights, k=1)[0]
-
-            await conn.execute("""
-                INSERT INTO user_cards (user_id, card_id, amount) VALUES ($1, $2, 1)
-                ON CONFLICT (user_id, card_id) DO UPDATE SET amount = user_cards.amount + 1
-            """, user.id, card['card_id'])
+            added = await add_user_card_with_limit(conn, user.id, card['card_id'], 1)
+            if not added:
+                return await msg.reply_text(
+                    "❌ You already own the maximum 3 copies of this card. Please try again.",
+                    reply_to_message_id=msg_id
+                )
 
             pre_count += 1
             await conn.execute(
@@ -1199,10 +1206,12 @@ async def got_card_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return await update.message.reply_text(f"❌ Card ID <code>{target_card_id}</code> not found.", parse_mode="HTML", reply_to_message_id=msg_id)
 
         async with conn.transaction():
-            await conn.execute("""
-                INSERT INTO user_cards (user_id, card_id, amount) VALUES ($1, $2, 1)
-                ON CONFLICT (user_id, card_id) DO UPDATE SET amount = user_cards.amount + 1
-            """, ADMIN_ID, target_card_id)
+            added = await add_user_card_with_limit(conn, ADMIN_ID, target_card_id, 1)
+            if not added:
+                return await update.message.reply_text(
+                    "❌ Admin account already owns the maximum 3 copies of this card.",
+                    reply_to_message_id=msg_id
+                )
             await check_and_auto_lock_card(conn, target_card_id)
 
     r = card.get('rarity', 'Ten')
@@ -2371,6 +2380,7 @@ async def add_card_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     ]
     if user.id == ADMIN_ID:
         keyboard_rows.insert(0, [InlineKeyboardButton("📓 Raiden", callback_data=f"addrarity_{user.id}_Raiden")])
+        keyboard_rows.insert(1, [InlineKeyboardButton("🎀 Birthday Special", callback_data=f"addrarity_{user.id}_Birthday Special")])
 
     await update.message.reply_text(
         f"🎴 <b>Card Info Ready:</b>\n"
@@ -2381,6 +2391,46 @@ async def add_card_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         reply_markup=InlineKeyboardMarkup(keyboard_rows),
         reply_to_message_id=msg_id
     )
+
+@restricted_command
+async def ttcard_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id != ADMIN_ID:
+        return
+    msg = update.effective_message
+    async with db_pool.acquire() as conn:
+        async with conn.transaction():
+            affected = await conn.fetch("""
+                UPDATE user_cards
+                SET amount = 3
+                WHERE amount > 3
+                RETURNING user_id, card_id, amount
+            """)
+            affected_users = len({row["user_id"] for row in affected})
+            affected_rows = len(affected)
+            locked_kryora = await conn.fetch("""
+                WITH eligible AS (
+                    SELECT c.card_id
+                    FROM cards c
+                    JOIN user_cards uc ON uc.card_id = c.card_id
+                    WHERE c.rarity = 'Kryora' AND c.is_locked = FALSE
+                    GROUP BY c.card_id
+                    HAVING SUM(uc.amount) >= 30
+                )
+                UPDATE cards
+                SET is_locked = TRUE
+                WHERE card_id IN (SELECT card_id FROM eligible)
+                RETURNING card_id
+            """)
+            locked_kryora_count = len(locked_kryora)
+    await msg.reply_text(
+        "✅ <b>Card ownership audit completed.</b>\n\n"
+        f"👥 Users corrected: <b>{affected_users}</b>\n"
+        f"🎴 Card records corrected: <b>{affected_rows}</b>\n"
+        f"🔒 Kryora cards auto-locked (30+ global copies): <b>{locked_kryora_count}</b>\n"
+        "📌 No user can keep more than 3 copies of the same card.",
+        parse_mode="HTML"
+    )
+
 
 @restricted_command
 async def del_card_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -3854,17 +3904,38 @@ async def finalize_card_drop(context: ContextTypes.DEFAULT_TYPE, msg_id: int):
             pass
 
     if joined:
-        winner_id, winner_name = random.choice(list(joined.items()))
         try:
             async with db_pool.acquire() as conn:
                 async with conn.transaction():
-                    await conn.execute("""
-                        INSERT INTO user_cards (user_id, card_id, amount) VALUES ($1, $2, 1)
-                        ON CONFLICT (user_id, card_id) DO UPDATE SET amount = user_cards.amount + 1
-                    """, winner_id, card['card_id'])
-                    await check_and_auto_lock_card(conn, card['card_id'])
+                    eligible_winners = []
+                    for participant_id, participant_name in joined.items():
+                        owned = await conn.fetchval(
+                            "SELECT amount FROM user_cards WHERE user_id = $1 AND card_id = $2",
+                            participant_id, card['card_id']
+                        )
+                        if (owned or 0) < USER_CARD_MAX_PER_ID:
+                            eligible_winners.append((participant_id, participant_name))
+
+                    if not eligible_winners:
+                        winner_id = None
+                    else:
+                        winner_id, winner_name = random.choice(eligible_winners)
+                        added = await add_user_card_with_limit(conn, winner_id, card['card_id'], 1)
+                        if not added:
+                            winner_id = None
+                        else:
+                            await check_and_auto_lock_card(conn, card['card_id'])
         except Exception as e:
             print(f"Error updating db in finalize_card_drop: {e}")
+            winner_id = None
+
+        if winner_id is None:
+            await context.bot.send_message(
+                chat_id,
+                f"❌ Card drop for <b>{card['name']}</b> ended. All participants already own 3 copies.",
+                parse_mode="HTML"
+            )
+            return
 
         r = card.get('rarity', 'Ten')
         r_display = get_rarity_display(r)
@@ -3917,18 +3988,27 @@ async def run_kbox_task(bot, chat_id, query, user_id, display_name):
 
         async with db_pool.acquire() as conn:
             async with conn.transaction():
-                card = await get_weighted_random_card(conn)
+                card = await get_pre_kbox_weighted_card(conn, user_id)
                 if not card:
                     try:
-                        await query.edit_message_text("❌ No cards available in database yet!", parse_mode="HTML")
+                        await query.edit_message_text(
+                            "❌ No eligible cards available. You may already own 3 copies of every available card.",
+                            parse_mode="HTML"
+                        )
+                    except Exception:
+                        pass
+                    # Return the Kbox fee if no eligible card can be awarded.
+                    await conn.execute("UPDATE users SET coins = coins + 1000, kbox_count = GREATEST(0, kbox_count - 1) WHERE user_id = $1", user_id)
+                    return
+
+                added = await add_user_card_with_limit(conn, user_id, card['card_id'], 1)
+                if not added:
+                    await conn.execute("UPDATE users SET coins = coins + 1000, kbox_count = GREATEST(0, kbox_count - 1) WHERE user_id = $1", user_id)
+                    try:
+                        await query.edit_message_text("❌ You already own 3 copies of that card. Your Kbox fee was refunded.", parse_mode="HTML")
                     except Exception:
                         pass
                     return
-
-                await conn.execute("""
-                    INSERT INTO user_cards (user_id, card_id, amount) VALUES ($1, $2, 1)
-                    ON CONFLICT (user_id, card_id) DO UPDATE SET amount = user_cards.amount + 1
-                """, user_id, card['card_id'])
                 await check_and_auto_lock_card(conn, card['card_id'])
 
         r = card.get('rarity', 'Ten')
@@ -4308,13 +4388,26 @@ async def callback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 if coins < price:
                     return await query.answer(f"❌ Insufficient Kachi! You need {price} Kachi (Current: {coins}).", show_alert=True)
 
+                owned_row = await conn.fetchrow(
+                    "SELECT amount FROM user_cards WHERE user_id = $1 AND card_id = $2 FOR UPDATE",
+                    user.id, card_id
+                )
+                owned_amount = owned_row["amount"] if owned_row else 0
+                if owned_amount >= USER_CARD_MAX_PER_ID:
+                    return await query.answer(
+                        "❌ You can own a maximum of 3 copies of the same card.",
+                        show_alert=True
+                    )
+
                 new_coins = coins - price
                 await conn.execute("UPDATE users SET coins = $1 WHERE user_id = $2", new_coins, user.id)
 
-                await conn.execute("""
-                    INSERT INTO user_cards (user_id, card_id, amount) VALUES ($1, $2, 1)
-                    ON CONFLICT (user_id, card_id) DO UPDATE SET amount = user_cards.amount + 1
-                """, user.id, card_id)
+                added = await add_user_card_with_limit(conn, user.id, card_id, 1)
+                if not added:
+                    return await query.answer(
+                        "❌ You can own a maximum of 3 copies of the same card.",
+                        show_alert=True
+                    )
                 await check_and_auto_lock_card(conn, card_id)
 
                 card_info = await conn.fetchrow("SELECT name FROM cards WHERE card_id = $1", card_id)
@@ -4527,12 +4620,13 @@ user တစ်ဦး၏ စာကို reply လုပ်၍ အောက်ပ
         return
 
     if data.startswith("addrarity_"):
-        parts = data.split("_")
-        allowed_uid = int(parts[1])
-        rarity = parts[2]
+        _, allowed_uid_text, rarity = data.split("_", 2)
+        allowed_uid = int(allowed_uid_text)
 
         if user.id != allowed_uid:
             return await query.answer("❌ Not for you.", show_alert=True)
+        if rarity == "Birthday Special" and user.id != ADMIN_ID:
+            return await query.answer("❌ Only the Bot Admin can add Birthday Special cards.", show_alert=True)
 
         card_info = pending_card_adds.get(user.id)
         if card_info:
@@ -4727,15 +4821,25 @@ GoodLuck 🍀 Time ({drop['timer']}sec)"""
                     if not s_card or s_card['amount'] <= 0:
                         return await query.answer(f"❌ You no longer own Card ID {card_id}.", show_alert=True)
 
+                    receiver_card = await conn.fetchrow(
+                        "SELECT amount FROM user_cards WHERE user_id = $1 AND card_id = $2 FOR UPDATE",
+                        receiver_id, card_id
+                    )
+                    receiver_amount = receiver_card["amount"] if receiver_card else 0
+                    if receiver_amount >= USER_CARD_MAX_PER_ID:
+                        return await query.answer(
+                            "❌ The receiver already owns 3 copies of this card.",
+                            show_alert=True
+                        )
+
                     if s_card['amount'] == 1:
                         await conn.execute("DELETE FROM user_cards WHERE user_id = $1 AND card_id = $2", sender_id, card_id)
                     else:
                         await conn.execute("UPDATE user_cards SET amount = amount - 1 WHERE user_id = $1 AND card_id = $2", sender_id, card_id)
 
-                    await conn.execute("""
-                        INSERT INTO user_cards (user_id, card_id, amount) VALUES ($1, $2, 1)
-                        ON CONFLICT (user_id, card_id) DO UPDATE SET amount = user_cards.amount + 1
-                    """, receiver_id, card_id)
+                    added = await add_user_card_with_limit(conn, receiver_id, card_id, 1)
+                    if not added:
+                        raise RuntimeError("Receiver card ownership limit reached")
                     await check_and_auto_lock_card(conn, card_id)
 
                     success_text = f"✅ {get_mention(sender_id, user.first_name)} sent <b>{card_name}</b> (ID: <code>{card_id}</code>) to {get_mention(receiver_id, receiver_name)}!"
@@ -4865,6 +4969,7 @@ def main():
     app.add_handler(CommandHandler("spw", spw_cmd))
     app.add_handler(CommandHandler("del", del_card_cmd))
     app.add_handler(CommandHandler("check", check_user_cmd))
+    app.add_handler(CommandHandler("ttcard", ttcard_cmd))
 
     # Bot-level Moderation Commands
     app.add_handler(CommandHandler("mute", mute_cmd))
