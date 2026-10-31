@@ -4929,31 +4929,44 @@ GoodLuck 🍀 Time ({drop['timer']}sec)"""
         await query.answer()
         return
 
-async def auto_fix_card_limits():
-    """On startup, clamp every user's copies of each card to the maximum of 3."""
+async def reset3x_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Admin-only: reduce any ownership above 3 copies of the same card to 3."""
+    user = update.effective_user
+    if not user or user.id != ADMIN_ID:
+        return await update.message.reply_text("❌ Admin only.")
+
     if db_pool is None:
-        raise RuntimeError("Database pool is not initialized.")
+        return await update.message.reply_text("❌ Database is not ready. Please try again.")
 
-    async with db_pool.acquire() as conn:
-        async with conn.transaction():
-            affected = await conn.fetch("""
-                UPDATE user_cards
-                SET amount = 3
-                WHERE amount > 3
-                RETURNING user_id, card_id
-            """)
+    try:
+        async with db_pool.acquire() as conn:
+            async with conn.transaction():
+                affected = await conn.fetch("""
+                    UPDATE user_cards
+                    SET amount = 3
+                    WHERE amount > 3
+                    RETURNING user_id, card_id
+                """)
 
-    affected_users = len({row["user_id"] for row in affected})
-    affected_rows = len(affected)
-    print(
-        f"[AUTO FIX] Completed: {affected_rows} card records corrected "
-        f"across {affected_users} users."
-    )
+        affected_users = len({row["user_id"] for row in affected})
+        affected_rows = len(affected)
+        await update.message.reply_text(
+            "✅ <b>/reset3x completed</b>\n\n"
+            f"🎴 Card records corrected: <b>{affected_rows}</b>\n"
+            f"👤 Users affected: <b>{affected_users}</b>\n"
+            "📌 Each user now has at most 3 copies of each card.",
+            parse_mode="HTML"
+        )
+    except Exception as e:
+        print(f"/reset3x failed for admin {user.id}: {type(e).__name__}: {e}")
+        await update.message.reply_text("❌ Reset failed. Check the bot logs and try again.")
 
 
 async def post_init(app: Application):
+    # Initialize the database only. Card ownership limits are enforced during
+    # purchases/gifts; existing over-limit amounts are changed only by /reset3x.
     await init_db()
-    await auto_fix_card_limits()
+
 
 def main():
     if not TOKEN:
@@ -5014,6 +5027,7 @@ def main():
     app.add_handler(CommandHandler("spw", spw_cmd))
     app.add_handler(CommandHandler("del", del_card_cmd))
     app.add_handler(CommandHandler("check", check_user_cmd))
+    app.add_handler(CommandHandler("reset3x", reset3x_cmd))
     app.add_handler(CommandHandler("fixcard", ttcard_cmd))
     app.add_handler(CommandHandler("ttcard", ttcard_cmd))  # Backward-compatible alias
 
