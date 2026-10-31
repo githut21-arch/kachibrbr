@@ -4929,8 +4929,31 @@ GoodLuck 🍀 Time ({drop['timer']}sec)"""
         await query.answer()
         return
 
+async def auto_fix_card_limits():
+    """On startup, clamp every user's copies of each card to the maximum of 3."""
+    if db_pool is None:
+        raise RuntimeError("Database pool is not initialized.")
+
+    async with db_pool.acquire() as conn:
+        async with conn.transaction():
+            affected = await conn.fetch("""
+                UPDATE user_cards
+                SET amount = 3
+                WHERE amount > 3
+                RETURNING user_id, card_id
+            """)
+
+    affected_users = len({row["user_id"] for row in affected})
+    affected_rows = len(affected)
+    print(
+        f"[AUTO FIX] Completed: {affected_rows} card records corrected "
+        f"across {affected_users} users."
+    )
+
+
 async def post_init(app: Application):
     await init_db()
+    await auto_fix_card_limits()
 
 def main():
     if not TOKEN:
