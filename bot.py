@@ -1296,6 +1296,8 @@ async def spw_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
             card = await conn.fetchrow("SELECT card_id, name, type, file_id, rarity, collection FROM cards WHERE card_id = $1", target_id)
             if not card:
                 return await update.message.reply_text(f"❌ Card ID <code>{target_id}</code> not found in database.", parse_mode="HTML", reply_to_message_id=msg_id)
+            if card.get('rarity') in ('Beyond', 'Birthday Special'):
+                return await update.message.reply_text("❌ Admin-only cards cannot be spawned as normal drops.", reply_to_message_id=msg_id)
         else:
             cards = await conn.fetch("SELECT card_id, name, type, file_id, rarity, collection FROM cards WHERE rarity NOT IN ('Birthday Special', 'Beyond')")
             if not cards:
@@ -2379,8 +2381,9 @@ async def add_card_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         ]
     ]
     if user.id == ADMIN_ID:
-        keyboard_rows.insert(0, [InlineKeyboardButton("📓 Raiden", callback_data=f"addrarity_{user.id}_Raiden")])
-        keyboard_rows.insert(1, [InlineKeyboardButton("🎀 Birthday Special", callback_data=f"addrarity_{user.id}_Birthday Special")])
+        keyboard_rows.insert(0, [InlineKeyboardButton("♠ Beyond", callback_data=f"addrarity_{user.id}_Beyond")])
+        keyboard_rows.insert(1, [InlineKeyboardButton("📓 Raiden", callback_data=f"addrarity_{user.id}_Raiden")])
+        keyboard_rows.insert(2, [InlineKeyboardButton("🎀 Birthday Special", callback_data=f"addrarity_{user.id}_Birthday Special")])
 
     await update.message.reply_text(
         f"🎴 <b>Card Info Ready:</b>\n"
@@ -3022,9 +3025,9 @@ async def run_kslot_task(bot, chat_id, query, user_id, display_name, bet_amount)
             result_type = "Win 1.2x ✨"
             net_gain = payout - bet_amount
         elif score >= 26:
-            payout = bet_amount
-            result_type = "Draw / Refund 1x 🤝"
-            net_gain = 0
+            payout = int(bet_amount * 0.8)
+            result_type = "Loss -0.2x 📉"
+            net_gain = payout - bet_amount
         else:
             payout = 0
             result_type = "Loss 0x 💔"
@@ -4647,8 +4650,8 @@ user တစ်ဦး၏ စာကို reply လုပ်၍ အောက်ပ
 
         if user.id != allowed_uid:
             return await query.answer("❌ Not for you.", show_alert=True)
-        if rarity == "Birthday Special" and user.id != ADMIN_ID:
-            return await query.answer("❌ Only the Bot Admin can add Birthday Special cards.", show_alert=True)
+        if rarity in ("Beyond", "Birthday Special") and user.id != ADMIN_ID:
+            return await query.answer("❌ Only the Bot Admin can add this rarity.", show_alert=True)
 
         card_info = pending_card_adds.get(user.id)
         if card_info:
@@ -4676,7 +4679,8 @@ user တစ်ဦး၏ စာကို reply လုပ်၍ အောက်ပ
         file_id = card_info["file_id"]
         is_card_admin = card_info["is_card_admin"]
         
-        is_locked = False
+        # Beyond cards are admin-sale-only and must not appear in ordinary drops.
+        is_locked = (rarity == "Beyond")
 
         async with db_pool.acquire() as conn:
             async with conn.transaction():
