@@ -3014,13 +3014,13 @@ async def run_kslot_task(bot, chat_id, query, user_id, display_name, bet_amount)
         symbols, score = decode_slot_dice(dice_val)
 
         if score >= 32:
-            payout = bet_amount * 2
-            result_type = "Win 2x 🏆"
-            net_gain = bet_amount
-        elif score >= 28:
             payout = int(bet_amount * 1.5)
-            result_type = "Win 1.5x ✨"
-            net_gain = int(bet_amount * 0.5)
+            result_type = "Win 1.5x 🏆"
+            net_gain = payout - bet_amount
+        elif score >= 28:
+            payout = int(bet_amount * 1.2)
+            result_type = "Win 1.2x ✨"
+            net_gain = payout - bet_amount
         elif score >= 26:
             payout = bet_amount
             result_type = "Draw / Refund 1x 🤝"
