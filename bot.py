@@ -2394,42 +2394,64 @@ async def add_card_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 @restricted_command
 async def ttcard_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user.id != ADMIN_ID:
-        return
+    user = update.effective_user
     msg = update.effective_message
-    async with db_pool.acquire() as conn:
-        async with conn.transaction():
-            affected = await conn.fetch("""
-                UPDATE user_cards
-                SET amount = 3
-                WHERE amount > 3
-                RETURNING user_id, card_id, amount
-            """)
-            affected_users = len({row["user_id"] for row in affected})
-            affected_rows = len(affected)
-            locked_kryora = await conn.fetch("""
-                WITH eligible AS (
-                    SELECT c.card_id
-                    FROM cards c
-                    JOIN user_cards uc ON uc.card_id = c.card_id
-                    WHERE c.rarity = 'Kryora' AND c.is_locked = FALSE
-                    GROUP BY c.card_id
-                    HAVING SUM(uc.amount) >= 30
-                )
-                UPDATE cards
-                SET is_locked = TRUE
-                WHERE card_id IN (SELECT card_id FROM eligible)
-                RETURNING card_id
-            """)
-            locked_kryora_count = len(locked_kryora)
-    await msg.reply_text(
-        "✅ <b>Card ownership audit completed.</b>\n\n"
-        f"👥 Users corrected: <b>{affected_users}</b>\n"
-        f"🎴 Card records corrected: <b>{affected_rows}</b>\n"
-        f"🔒 Kryora cards auto-locked (30+ global copies): <b>{locked_kryora_count}</b>\n"
-        "📌 No user can keep more than 3 copies of the same card.",
-        parse_mode="HTML"
-    )
+
+    if not user or not msg:
+        return
+
+    # Reply instead of silently returning, so an ADMIN_ID mismatch is visible.
+    if user.id != ADMIN_ID:
+        return await msg.reply_text("❌ This command is only available to the main bot admin.")
+
+    status_msg = await msg.reply_text("⏳ Checking all users' card collections...")
+
+    try:
+        async with db_pool.acquire() as conn:
+            async with conn.transaction():
+                affected = await conn.fetch("""
+                    UPDATE user_cards
+                    SET amount = 3
+                    WHERE amount > 3
+                    RETURNING user_id, card_id
+                """)
+                affected_users = len({row["user_id"] for row in affected})
+                affected_rows = len(affected)
+
+                locked_kryora = await conn.fetch("""
+                    WITH eligible AS (
+                        SELECT c.card_id
+                        FROM cards c
+                        JOIN user_cards uc ON uc.card_id = c.card_id
+                        WHERE c.rarity = 'Kryora' AND c.is_locked = FALSE
+                        GROUP BY c.card_id
+                        HAVING SUM(uc.amount) >= 30
+                    )
+                    UPDATE cards
+                    SET is_locked = TRUE
+                    WHERE card_id IN (SELECT card_id FROM eligible)
+                    RETURNING card_id
+                """)
+                locked_kryora_count = len(locked_kryora)
+
+        await status_msg.edit_text(
+            "✅ <b>Card ownership audit completed.</b>\\n\\n"
+            f"👥 Users corrected: <b>{affected_users}</b>\\n"
+            f"🎴 Card records corrected: <b>{affected_rows}</b>\\n"
+            f"🔒 Kryora cards auto-locked: <b>{locked_kryora_count}</b>\\n"
+            "📌 No user can keep more than 3 copies of the same card.",
+            parse_mode="HTML"
+        )
+    except Exception as e:
+        print(f"/ttcard failed for admin {user.id}: {type(e).__name__}: {e}")
+        try:
+            await status_msg.edit_text(
+                "❌ /ttcard failed while checking the database.\\n"
+                f"<code>{type(e).__name__}: {str(e)[:700]}</code>",
+                parse_mode="HTML"
+            )
+        except Exception as reply_error:
+            print(f"/ttcard error reply failed: {reply_error}")
 
 
 @restricted_command
