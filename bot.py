@@ -2443,10 +2443,10 @@ async def ttcard_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
             parse_mode="HTML"
         )
     except Exception as e:
-        print(f"/ttcard failed for admin {user.id}: {type(e).__name__}: {e}")
+        print(f"/fixcard failed for admin {user.id}: {type(e).__name__}: {e}")
         try:
             await status_msg.edit_text(
-                "❌ /ttcard failed while checking the database.\\n"
+                "❌ /fixcard failed while checking the database.\\n"
                 f"<code>{type(e).__name__}: {str(e)[:700]}</code>",
                 parse_mode="HTML"
             )
@@ -4991,7 +4991,8 @@ def main():
     app.add_handler(CommandHandler("spw", spw_cmd))
     app.add_handler(CommandHandler("del", del_card_cmd))
     app.add_handler(CommandHandler("check", check_user_cmd))
-    app.add_handler(CommandHandler("ttcard", ttcard_cmd))
+    app.add_handler(CommandHandler("fixcard", ttcard_cmd))
+    app.add_handler(CommandHandler("ttcard", ttcard_cmd))  # Backward-compatible alias
 
     # Bot-level Moderation Commands
     app.add_handler(CommandHandler("mute", mute_cmd))
