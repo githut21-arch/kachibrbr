@@ -56,16 +56,16 @@ spam_ignores = {}
 seen_registered_users = set()
 seen_registered_groups = set()
 
-# Database Connection Pool (Optimized for High Concurrency - Thousands of Users)
+# Database Connection Pool (Optimized for Speed & Concurrency)
 db_pool = None
 
 async def init_db():
     global db_pool, global_default_threshold
     db_pool = await asyncpg.create_pool(
         DATABASE_URL, 
-        min_size=100, 
-        max_size=400, 
-        command_timeout=30
+        min_size=10, 
+        max_size=30, 
+        command_timeout=15
     )
     
     async with db_pool.acquire() as conn:
@@ -125,20 +125,12 @@ async def init_db():
                 amount INT DEFAULT 1,
                 PRIMARY KEY (user_id, card_id)
             );
-            CREATE TABLE IF NOT EXISTS redeem_codes (
-                code TEXT PRIMARY KEY,
-                kachi BIGINT NOT NULL,
-                max_uses INT NOT NULL,
-                used_count INT DEFAULT 0
-            );
-            CREATE TABLE IF NOT EXISTS code_redemptions (
-                code TEXT,
-                user_id BIGINT,
-                PRIMARY KEY (code, user_id)
-            );
             CREATE INDEX IF NOT EXISTS idx_user_cards_user_id ON user_cards(user_id);
             CREATE INDEX IF NOT EXISTS idx_user_cards_card_id ON user_cards(card_id);
             CREATE INDEX IF NOT EXISTS idx_group_members_chat_user ON group_members(chat_id, user_id);
+            CREATE INDEX IF NOT EXISTS idx_cards_rarity ON cards(rarity);
+            CREATE INDEX IF NOT EXISTS idx_users_coins ON users(coins DESC);
+            CREATE INDEX IF NOT EXISTS idx_users_daily_kg_win ON users(daily_kg_win DESC);
         """)
 
         try:
@@ -279,7 +271,15 @@ def restricted_command(func):
                             return
             except Exception:
                 pass
-        return await func(update, context)
+        try:
+            return await func(update, context)
+        except Exception as e:
+            print(f"Error in {func.__name__}: {e}")
+            if msg:
+                try:
+                    await msg.reply_text("⚠️ An error occurred while executing the command. Please try again later.", reply_to_message_id=msg.message_id)
+                except Exception:
+                    pass
     return wrapper
 
 async def register_user_group(user, chat, context: ContextTypes.DEFAULT_TYPE = None):
@@ -387,7 +387,6 @@ def get_mention(user_id, name):
     return f'<a href="tg://user?id={user_id}">{clean_name}</a>'
 
 async def get_weighted_random_card(conn):
-    # Exclude Beyond and Birthday Special and Raiden and Kryora from regular drops/kbox
     all_cards = await conn.fetch("SELECT card_id, name, type, file_id, rarity, collection, is_locked FROM cards WHERE is_locked = FALSE AND rarity NOT IN ('Birthday Special', 'Beyond', 'Raiden', 'Kryora')")
     if not all_cards:
         all_cards = await conn.fetch("SELECT card_id, name, type, file_id, rarity, collection, is_locked FROM cards WHERE rarity NOT IN ('Birthday Special', 'Beyond', 'Raiden', 'Kryora')")
@@ -469,7 +468,6 @@ async def check_main_group_restriction(update: Update, context: ContextTypes.DEF
             return False
     return True
 
-# /pre Command Implementation (Excluding Raiden, Kryora, Beyond, Birthday Special)
 @restricted_command
 async def pre_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not await check_force_join(update, context):
@@ -1426,88 +1424,6 @@ async def buy_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "items": verified_items
     }
 
-# --- /kcode Command Implementation ---
-@restricted_command
-async def kcode_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    msg_id = update.message.message_id
-    if update.effective_user.id != ADMIN_ID:
-        return
-
-    if not context.args or len(context.args) < 3:
-        return await update.message.reply_text("❌ Usage: `/kcode [code] [kachi_amount] [max_users]`\nဥပမာ: `/kcode wond 2000 5`", parse_mode="Markdown", reply_to_message_id=msg_id)
-
-    code = context.args[0].strip().lower()
-    try:
-        kachi_amount = int(context.args[1])
-        max_uses = int(context.args[2])
-    except ValueError:
-        return await update.message.reply_text("❌ Invalid Kachi amount or max users.", reply_to_message_id=msg_id)
-
-    async with db_pool.acquire() as conn:
-        await conn.execute("""
-            INSERT INTO redeem_codes (code, kachi, max_uses, used_count)
-            VALUES ($1, $2, $3, 0)
-            ON CONFLICT (code) DO UPDATE SET kachi = EXCLUDED.kachi, max_uses = EXCLUDED.max_uses, used_count = 0
-        """, code, kachi_amount, max_uses)
-
-    await update.message.reply_text(
-        f"✅ <b>Redeem Code Created Successfully!</b>\n\n"
-        f"🔑 Code: <code>{code}</code>\n"
-        f"💎 Kachi: <b>{kachi_amount}</b>\n"
-        f"👥 Max Uses: <b>{max_uses}</b>",
-        parse_mode="HTML",
-        reply_to_message_id=msg_id
-    )
-
-# --- User Command /rede ---
-@restricted_command
-async def rede_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not await check_force_join(update, context):
-        return
-    user = update.effective_user
-    chat = update.effective_chat
-    msg = update.message
-    msg_id = msg.message_id
-    await register_user_group(user, chat, context)
-
-    if not context.args:
-        return await msg.reply_text("❌ Usage: `/rede [code]`", parse_mode="Markdown", reply_to_message_id=msg_id)
-
-    code = context.args[0].strip().lower()
-
-    async with db_pool.acquire() as conn:
-        async with conn.transaction():
-            code_row = await conn.fetchrow("SELECT kachi, max_uses, used_count FROM redeem_codes WHERE code = $1 FOR UPDATE", code)
-            if not code_row:
-                return await msg.reply_text("❌ <b>အသုံးမပြုနိုင်သော (သို့မဟုတ်) မရှိတော့သော Code ဖြစ်ပါသည်။</b>", parse_mode="HTML", reply_to_message_id=msg_id)
-
-            kachi = code_row['kachi']
-            max_uses = code_row['max_uses']
-            used_count = code_row['used_count']
-
-            already = await conn.fetchrow("SELECT 1 FROM code_redemptions WHERE code = $1 AND user_id = $2", code, user.id)
-            if already:
-                return await msg.reply_text("❌ <b>သင်သည် ဤ Code ကို အသုံးပြုပြီးသား ဖြစ်ပါသည်။</b>", parse_mode="HTML", reply_to_message_id=msg_id)
-
-            if used_count >= max_uses:
-                return await msg.reply_text("❌ <b>ဝမ်းနည်းပါတယ်၊ ဤ Code မှာ လူပြည့်သွားပါပြီ (Limit Reached)။</b>", parse_mode="HTML", reply_to_message_id=msg_id)
-
-            await conn.execute("UPDATE redeem_codes SET used_count = used_count + 1 WHERE code = $1", code)
-            await conn.execute("INSERT INTO code_redemptions (code, user_id) VALUES ($1, $2)", code, user.id)
-            await conn.execute("UPDATE users SET coins = coins + $1 WHERE user_id = $2", kachi, user.id)
-
-            updated_user = await conn.fetchrow("SELECT coins FROM users WHERE user_id = $1", user.id)
-            new_balance = updated_user['coins'] if updated_user else kachi
-
-    await msg.reply_text(
-        f"🎉 <b>Code Redeemed Successfully!</b>\n\n"
-        f"👤 User: {get_mention(user.id, user.first_name)}\n"
-        f"🎁 Reward: <b>+{kachi} Kachi</b> 🩸\n"
-        f"💰 Total Balance: <b>{new_balance}</b> Kachi ✨",
-        parse_mode="HTML",
-        reply_to_message_id=msg_id
-    )
-
 # --- Admin /kclist Command Implementation ---
 async def render_kclist_page(update_or_query, context: ContextTypes.DEFAULT_TYPE, page: int = 0):
     msg_id = update_or_query.message.message_id if isinstance(update_or_query, Update) and update_or_query.message else None
@@ -1574,30 +1490,29 @@ async def admin_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 👑 <b>List:</b>
 1. /aa - Create trivia quiz
 2. /send - Broadcast quiz to groups (reply to /aa)
-3. /kcode [code] [kachi] [max] - Create redeem code
-4. /kclist - View Kachi users list with pagination
-5. /crest - Reset all thresholds & message counts
-6. /k [user_id] [amount] - Add/remove Kachi
-7. /kcreset [amount] - Reset all users' Kachi balance to specified amount
-8. /addadmin [user_id] - Add Card Admin
-9. /badmin [user_id] - Set Card Buyer
-10. /buy [seller_id] [card_id] ... - Buy cards from user (removes from seller)
-11. /got [card_id] - Get card directly to your inventory (Admin only)
-12. /add - Add new card (reply to media) / /add [user_id] for Birthday Special / Beyond card
-13. /unlock [card_id/all] - Unlock Yugen, locked card, or all cards
-14. /lock [card_id/all] - Lock card or all cards
-15. /spw [card_id] - Spawn random card or specific card
-16. /del [card_id_or_name] - Delete card by ID or Name
-17. /cardlist - View all cards
-18. /seelock - View Yugen cards lock status and drops (Admin only)
-19. /glist - View groups list
-20. /stats - View stats
-21. /broadcast - Broadcast message
-22. /check [user_id] - Check user profile info
-23. /mute [id] [time] [reason] - Mute user from bot usage
-24. /ban [id] [reason] - Ban user from bot usage
-25. /umute [id] - Unmute user from bot usage
-26. /unban [id] - Unban user from bot usage"""
+3. /kclist - View Kachi users list with pagination
+4. /crest - Reset all thresholds & message counts
+5. /k [user_id] [amount] - Add/remove Kachi
+6. /kcreset [amount] - Reset all users' Kachi balance to specified amount
+7. /addadmin [user_id] - Add Card Admin
+8. /badmin [user_id] - Set Card Buyer
+9. /buy [seller_id] [card_id] ... - Buy cards from user (removes from seller)
+10. /got [card_id] - Get card directly to your inventory (Admin only)
+11. /add - Add new card (reply to media) / /add beyond or /add [user_id] for Birthday Special / Beyond card
+12. /unlock [card_id/all] - Unlock Yugen, locked card, or all cards
+13. /lock [card_id/all] - Lock card or all cards
+14. /spw [card_id] - Spawn random card or specific card
+15. /del [card_id_or_name] - Delete card by ID or Name
+16. /cardlist - View all cards
+17. /seelock - View Yugen cards lock status and drops (Admin only)
+18. /glist - View groups list
+19. /stats - View stats
+20. /broadcast - Broadcast message
+21. /check [user_id] - Check user profile info
+22. /mute [id] [time] [reason] - Mute user from bot usage
+23. /ban [id] [reason] - Ban user from bot usage
+24. /umute [id] - Unmute user from bot usage
+25. /unban [id] - Unban user from bot usage"""
 
     await update.message.reply_text(text, parse_mode="HTML", reply_to_message_id=msg_id)
 
@@ -1710,7 +1625,7 @@ async def umute_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if not context.args:
-        return await msg.reply_text("❌ Usage: `/umute [user_id]`", parse_mode="Markdown", reply_to_message_id=msg_id)
+        return await msg.reply_text("❌ Usage: `/umute [user_id]`", parse_mode="Markdown", reply_to_message_id=msg.message_id)
 
     try:
         target_id = int(context.args[0])
@@ -2044,11 +1959,11 @@ async def add_card_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     reply = update.message.reply_to_message
     if not reply or (not reply.photo and not reply.video):
-        return await update.message.reply_text("❌ Reply to a photo or video with `/add [name]` or `/add [user_id]` (for Birthday Special / Beyond)", parse_mode="Markdown", reply_to_message_id=msg_id)
+        return await update.message.reply_text("❌ Reply to a photo or video with `/add [name]`, `/add beyond`, or `/add [user_id]` (for Birthday Special)", parse_mode="Markdown", reply_to_message_id=msg_id)
 
     raw_args = update.message.text.partition(" ")[2].strip()
     if not raw_args:
-        return await update.message.reply_text("❌ Usage: Reply to media with `/add [name]` or `/add [user_id]`", parse_mode="Markdown", reply_to_message_id=msg_id)
+        return await update.message.reply_text("❌ Usage: Reply to media with `/add [name]`, `/add beyond`, or `/add [user_id]`", parse_mode="Markdown", reply_to_message_id=msg_id)
 
     is_birthday_add = False
     is_beyond_add = False
@@ -2058,8 +1973,10 @@ async def add_card_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     space_parts = raw_args.split()
     dot_parts = [p.strip() for p in raw_args.split(".")]
 
-    if raw_args.lower() == "beyond":
+    if raw_args.lower() == "beyond" or raw_args.lower().startswith("beyond"):
         is_beyond_add = True
+        if len(space_parts) > 1 and space_parts[1].isdigit():
+            custom_card_id = space_parts[1]
     elif raw_args.isdigit() and len(raw_args) >= 8:
         is_birthday_add = True
         target_user_id = int(raw_args)
@@ -2068,9 +1985,6 @@ async def add_card_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         p1, p2 = space_parts[0], space_parts[1]
         target_user_id = int(p1) if len(p1) >= 8 else int(p2)
         custom_card_id = p2 if len(p1) >= 8 else p1
-    elif len(space_parts) == 2 and space_parts[0].lower() == "beyond":
-        is_beyond_add = True
-        custom_card_id = space_parts[1]
     elif len(dot_parts) == 2 and dot_parts[0].isdigit() and dot_parts[1].isdigit():
         p1, p2 = dot_parts[0], dot_parts[1]
         if len(p1) >= 8 or len(p2) >= 8:
@@ -2082,7 +1996,7 @@ async def add_card_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if user.id != ADMIN_ID:
             return await update.message.reply_text("❌ Only the Bot Admin can add ♠Beyond rarity cards!", reply_to_message_id=msg_id)
         
-        card_name = f"♠Beyond"
+        card_name = "♠Beyond"
         rarity = "Beyond"
 
         if custom_card_id:
@@ -2231,8 +2145,6 @@ async def add_card_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
             reply_to_message_id=msg_id
         )
 
-    # Restriction: Other Card Admins can only add up to Kryora (Ten, Hoshi, Kami, Kiwami, Shinsei, Yugen, Kryora)
-    # Raiden, Birthday Special, Beyond are restricted to Main Admin ID only.
     card_id = None
     card_name = None
 
@@ -2277,7 +2189,6 @@ async def add_card_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "is_card_admin": is_card_admin
     }
 
-    # Other Card Admins can only add up to Kryora
     keyboard_rows = [
         [
             InlineKeyboardButton("🦠 Kryora", callback_data=f"addrarity_{user.id}_Kryora"),
@@ -4755,12 +4666,10 @@ def main():
     app.add_handler(CommandHandler("kgtop", kgtop_cmd))
     app.add_handler(CommandHandler("kg", kg_cmd))
     app.add_handler(CommandHandler("ksearch", ksearch_cmd))
-    app.add_handler(CommandHandler("rede", rede_cmd))
 
     # Admin Commands
     app.add_handler(CommandHandler("aa", aa_cmd))
     app.add_handler(CommandHandler("send", send_quiz_cmd))
-    app.add_handler(CommandHandler("kcode", kcode_cmd))
     app.add_handler(CommandHandler("kclist", kclist_cmd))
     app.add_handler(CommandHandler("cardlist", cardlist_cmd))
     app.add_handler(CommandHandler("seelock", seelock_cmd))
