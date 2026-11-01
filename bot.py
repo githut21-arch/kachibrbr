@@ -2,6 +2,7 @@ import asyncio
 import json
 import os
 import random
+import re
 import string
 import time
 import uuid
@@ -2727,6 +2728,93 @@ async def kgift_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "card_name": card['name']
     }
 
+async def rngift_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Bot-owner-only card grant; does not deduct cards from the admin."""
+    msg = update.message
+    admin = update.effective_user
+    if not admin or admin.id != ADMIN_ID:
+        return await msg.reply_text("❌ Only the Bot Admin can use /rngift.")
+
+    if not context.args:
+        return await msg.reply_text(
+            "❌ Usage:\n"
+            "• Reply to a user's message: /rngift 123x2 92 828\n"
+            "• By user ID: /rngift 123456789 123x2 92\n\n"
+            "x2 means 2 copies."
+        )
+
+    reply = msg.reply_to_message
+    target_id = None
+    card_tokens = list(context.args)
+
+    # Reply mode: recipient is the replied-to user.
+    if reply and reply.from_user and not reply.from_user.is_bot:
+        target_id = reply.from_user.id
+    # Direct mode: first argument is a Telegram user ID (normally 8+ digits).
+    elif card_tokens and card_tokens[0].isdigit() and len(card_tokens[0]) >= 8:
+        target_id = int(card_tokens.pop(0))
+
+    if not target_id:
+        return await msg.reply_text(
+            "❌ Reply to the recipient's message, or provide their user ID first."
+        )
+    if target_id == admin.id:
+        return await msg.reply_text("❌ You cannot use /rngift to gift cards to yourself.")
+    if not card_tokens:
+        return await msg.reply_text("❌ Please provide at least one card ID.")
+
+    requested = []
+    for token in card_tokens:
+        match = re.fullmatch(r"([A-Za-z0-9_-]+?)(?:[xX](\d+))?", token)
+        if not match:
+            return await msg.reply_text(
+                f"❌ Invalid card format: {token}\nUse cardID or cardIDx2."
+            )
+        card_id = match.group(1)
+        amount = int(match.group(2) or 1)
+        if amount < 1 or amount > 10000:
+            return await msg.reply_text("❌ Each quantity must be between 1 and 10000.")
+        requested.append((card_id, amount))
+
+    # Combine repeated IDs so each card is updated once.
+    combined = {}
+    for card_id, amount in requested:
+        combined[card_id] = combined.get(card_id, 0) + amount
+
+    async with db_pool.acquire() as conn:
+        async with conn.transaction():
+            cards = await conn.fetch(
+                "SELECT card_id, name FROM cards WHERE card_id = ANY($1::text[])",
+                list(combined.keys())
+            )
+            found = {row["card_id"]: row for row in cards}
+            missing = [cid for cid in combined if cid not in found]
+            if missing:
+                return await msg.reply_text(
+                    "❌ Card ID not found: " + ", ".join(missing)
+                )
+
+            for card_id, amount in combined.items():
+                await conn.execute("""
+                    INSERT INTO user_cards (user_id, card_id, amount)
+                    VALUES ($1, $2, $3)
+                    ON CONFLICT (user_id, card_id)
+                    DO UPDATE SET amount = user_cards.amount + EXCLUDED.amount
+                """, target_id, card_id, amount)
+
+    details = "\n".join(
+        f"• <b>{found[cid]['name']}</b> — <code>{cid}</code> ×{amount}"
+        for cid, amount in combined.items()
+    )
+    await msg.reply_text(
+        f"✅ <b>Admin Gift Successful</b>\n\n"
+        f"👤 User ID: <code>{target_id}</code>\n"
+        f"🎴 Cards granted:\n{details}\n\n"
+        f"<i>Admin inventory was not changed.</i>",
+        parse_mode="HTML"
+    )
+
+
 async def render_kc_view(update_or_query, context: ContextTypes.DEFAULT_TYPE, page: int = 0, owner_id: int = None):
     user = update_or_query.effective_user if isinstance(update_or_query, Update) else update_or_query.from_user
     target_id = owner_id if owner_id else user.id
@@ -4999,6 +5087,7 @@ def main():
     app.add_handler(CommandHandler("kdaily", kdaily_cmd))
     app.add_handler(CommandHandler("set", set_card_cmd))
     app.add_handler(CommandHandler("kgift", kgift_cmd))
+    app.add_handler(CommandHandler("rngift", rngift_cmd))
     app.add_handler(CommandHandler("ksellcard", ksellcard_cmd))
     app.add_handler(CommandHandler("card", card_detail_cmd))
     app.add_handler(CommandHandler("ktop", ktop_cmd))
