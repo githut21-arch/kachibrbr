@@ -521,29 +521,41 @@ async def check_force_join(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         return True
     if user.id == ADMIN_ID:
         return True
-    
+
+    # A temporary Telegram/Railway network or API error must not silently
+    # disable every command. Enforce joining only when Telegram returns
+    # the user's actual membership status.
     try:
         member = await context.bot.get_chat_member(chat_id="@beyondpoe", user_id=user.id)
-        if member.status in ['left', 'kicked']:
-            raise Exception("Not joined")
+    except TelegramError as e:
+        print(f"Force-join check temporarily unavailable for user {user.id}: {type(e).__name__}: {e}")
         return True
-    except Exception:
-        text = f"🐠 Hello {get_mention(user.id, user.first_name)}, please join our channel to use the bot 🩸"
-        keyboard = InlineKeyboardMarkup([
-            [InlineKeyboardButton("Join Channel 📢", url="https://t.me/beyondpoe")],
-            [InlineKeyboardButton("Joined ✅", callback_data=f"check_join_{user.id}")]
-        ])
-        if update.message:
-            try:
-                await update.message.reply_text(text, parse_mode="HTML", reply_markup=keyboard, reply_to_message_id=update.message.message_id)
-            except Exception:
-                pass
-        elif update.callback_query:
-            try:
-                await update.callback_query.answer("❌ Please join the channel first.", show_alert=True)
-            except Exception:
-                pass
-        return False
+    except Exception as e:
+        print(f"Unexpected force-join check error for user {user.id}: {type(e).__name__}: {e}")
+        return True
+
+    if member.status not in ['left', 'kicked']:
+        return True
+
+    text = f"🐠 Hello {get_mention(user.id, user.first_name)}, please join our channel to use the bot 🩸"
+    keyboard = InlineKeyboardMarkup([
+        [InlineKeyboardButton("Join Channel 📢", url="https://t.me/beyondpoe")],
+        [InlineKeyboardButton("Joined ✅", callback_data=f"check_join_{user.id}")]
+    ])
+    if update.message:
+        try:
+            await update.message.reply_text(
+                text, parse_mode="HTML", reply_markup=keyboard,
+                reply_to_message_id=update.message.message_id
+            )
+        except Exception as e:
+            print(f"Could not send force-join notice to user {user.id}: {type(e).__name__}: {e}")
+    elif update.callback_query:
+        try:
+            await update.callback_query.answer("❌ Please join the channel first.", show_alert=True)
+        except Exception as e:
+            print(f"Could not answer force-join callback for user {user.id}: {type(e).__name__}: {e}")
+    return False
 
 async def check_main_group_restriction(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
     chat = update.effective_chat
