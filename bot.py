@@ -93,13 +93,15 @@ class UserSerialUpdateProcessor(BaseUpdateProcessor):
 # Database Connection Pool: start small and allow measured concurrency.
 db_pool = None
 
-async def init_db():
+async def _init_db_once():
     global db_pool, global_default_threshold
     db_pool = await asyncpg.create_pool(
-        DATABASE_URL, 
+        DATABASE_URL,
         min_size=2,
         max_size=20,
-        command_timeout=30
+        command_timeout=30,
+        timeout=30,
+        max_inactive_connection_lifetime=60
     )
     
     async with db_pool.acquire() as conn:
@@ -232,6 +234,46 @@ async def init_db():
         thresh_row = await conn.fetchrow("SELECT value FROM settings WHERE key='default_threshold'")
         if thresh_row:
             global_default_threshold = int(thresh_row['value'])
+
+
+async def init_db():
+    """Initialize PostgreSQL with retries for temporary Railway/network resets."""
+    global db_pool
+
+    if not DATABASE_URL:
+        raise RuntimeError("DATABASE_URL is missing. Set it in Railway Variables.")
+
+    last_error = None
+    for attempt in range(1, 9):
+        try:
+            await _init_db_once()
+            print("✅ Database initialized successfully.")
+            return
+        except Exception as e:
+            last_error = e
+            print(
+                f"⚠️ Database initialization attempt {attempt}/8 failed: "
+                f"{type(e).__name__}: {e}"
+            )
+
+            # Discard a partially-created or unhealthy pool before retrying.
+            if db_pool is not None:
+                try:
+                    await db_pool.close()
+                except Exception:
+                    pass
+                db_pool = None
+
+            if attempt < 8:
+                delay = min(5 * attempt, 30)
+                print(f"🔄 Retrying database connection in {delay} seconds...")
+                await asyncio.sleep(delay)
+
+    raise RuntimeError(
+        f"Could not initialize PostgreSQL after 8 attempts: "
+        f"{type(last_error).__name__}: {last_error}"
+    ) from last_error
+
 
 def get_rarity_emoji(r):
     if r == 'Beyond':
