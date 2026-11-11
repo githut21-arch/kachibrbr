@@ -1821,7 +1821,7 @@ async def ban_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if not context.args:
-        return await msg.reply_text("❌ Usage: `/ban [user_id] [reason]`", parse_mode="Markdown", reply_to_message_id=msg.message_id)
+        return await msg.reply_text("❌ Usage: `/ban [user_id] [reason]`", parse_mode="Markdown", reply_to_message_id=msg_id)
 
     try:
         target_id = int(context.args[0])
@@ -2493,10 +2493,10 @@ async def ttcard_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 locked_kryora_count = len(locked_kryora)
 
         await status_msg.edit_text(
-            "✅ <b>Card ownership audit completed.</b>\\n\\n"
-            f"👥 Users corrected: <b>{affected_users}</b>\\n"
-            f"🎴 Card records corrected: <b>{affected_rows}</b>\\n"
-            f"🔒 Kryora cards auto-locked: <b>{locked_kryora_count}</b>\\n"
+            "✅ <b>Card ownership audit completed.</b>\n\n"
+            f"👥 Users corrected: <b>{affected_users}</b>\n"
+            f"🎴 Card records corrected: <b>{affected_rows}</b>\n"
+            f"🔒 Kryora cards auto-locked: <b>{locked_kryora_count}</b>\n"
             "📌 No user can keep more than 3 copies of the same card.",
             parse_mode="HTML"
         )
@@ -2504,7 +2504,7 @@ async def ttcard_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         print(f"/fixcard failed for admin {user.id}: {type(e).__name__}: {e}")
         try:
             await status_msg.edit_text(
-                "❌ /fixcard failed while checking the database.\\n"
+                "❌ /fixcard failed while checking the database.\n"
                 f"<code>{type(e).__name__}: {str(e)[:700]}</code>",
                 parse_mode="HTML"
             )
