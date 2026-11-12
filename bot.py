@@ -93,170 +93,160 @@ class UserSerialUpdateProcessor(BaseUpdateProcessor):
 # Database Connection Pool: start small and allow measured concurrency.
 db_pool = None
 
-async def _init_db_once():
-    global db_pool, global_default_threshold
-    db_pool = await asyncpg.create_pool(
-        DATABASE_URL,
-        min_size=2,
-        max_size=20,
-        command_timeout=30,
-        timeout=30,
-        max_inactive_connection_lifetime=60
-    )
-    
-    async with db_pool.acquire() as conn:
-        await conn.execute("""
-            CREATE TABLE IF NOT EXISTS users (
-                user_id BIGINT PRIMARY KEY,
-                name TEXT,
-                coins BIGINT DEFAULT 1000,
-                selected_card_id TEXT,
-                is_card_admin BOOLEAN DEFAULT FALSE,
-                is_card_buyer BOOLEAN DEFAULT FALSE,
-                started_in_pm BOOLEAN DEFAULT FALSE,
-                banned BOOLEAN DEFAULT FALSE,
-                ban_reason TEXT,
-                muted_until BIGINT DEFAULT 0,
-                mute_reason TEXT,
-                last_kdaily BIGINT DEFAULT 0,
-                pre_count INT DEFAULT 0,
-                last_pre_reset BIGINT DEFAULT 0,
-                kbox_count INT DEFAULT 0,
-                last_kbox_reset BIGINT DEFAULT 0,
-                kc_rarity_mode TEXT DEFAULT NULL,
-                referred_by BIGINT,
-                referral_count INT DEFAULT 0,
-                daily_kg_win BIGINT DEFAULT 0
-            );
-            CREATE TABLE IF NOT EXISTS groups (
-                chat_id BIGINT PRIMARY KEY,
-                title TEXT,
-                added_by_id BIGINT,
-                added_by_name TEXT,
-                threshold INT DEFAULT 80,
-                msg_count INT DEFAULT 0,
-                admin_warned BOOLEAN DEFAULT FALSE
-            );
-            CREATE TABLE IF NOT EXISTS group_members (
-                chat_id BIGINT,
-                user_id BIGINT,
-                PRIMARY KEY (chat_id, user_id)
-            );
-            CREATE TABLE IF NOT EXISTS settings (
-                key TEXT PRIMARY KEY,
-                value TEXT
-            );
-            CREATE TABLE IF NOT EXISTS cards (
-                card_id TEXT PRIMARY KEY,
-                name TEXT,
-                type TEXT,
-                file_id TEXT,
-                rarity TEXT,
-                collection TEXT,
-                is_locked BOOLEAN DEFAULT FALSE
-            );
-            CREATE TABLE IF NOT EXISTS user_cards (
-                user_id BIGINT,
-                card_id TEXT,
-                amount INT DEFAULT 1,
-                PRIMARY KEY (user_id, card_id)
-            );
-            CREATE TABLE IF NOT EXISTS redeem_codes (
-                code TEXT PRIMARY KEY,
-                kachi BIGINT NOT NULL,
-                max_uses INT NOT NULL,
-                used_count INT DEFAULT 0
-            );
-            CREATE TABLE IF NOT EXISTS code_redemptions (
-                code TEXT,
-                user_id BIGINT,
-                PRIMARY KEY (code, user_id)
-            );
-            CREATE INDEX IF NOT EXISTS idx_user_cards_user_id ON user_cards(user_id);
-            CREATE INDEX IF NOT EXISTS idx_user_cards_card_id ON user_cards(card_id);
-            CREATE INDEX IF NOT EXISTS idx_group_members_chat_user ON group_members(chat_id, user_id);
-        """)
-
-        try:
-            await conn.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS selected_card_id TEXT;")
-            await conn.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS is_card_admin BOOLEAN DEFAULT FALSE;")
-            await conn.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS is_card_buyer BOOLEAN DEFAULT FALSE;")
-            await conn.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS started_in_pm BOOLEAN DEFAULT FALSE;")
-            await conn.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS banned BOOLEAN DEFAULT FALSE;")
-            await conn.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS ban_reason TEXT;")
-            await conn.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS muted_until BIGINT DEFAULT 0;")
-            await conn.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS mute_reason TEXT;")
-            await conn.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS last_kdaily BIGINT DEFAULT 0;")
-            await conn.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS pre_count INT DEFAULT 0;")
-            await conn.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS last_pre_reset BIGINT DEFAULT 0;")
-            await conn.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS kbox_count INT DEFAULT 0;")
-            await conn.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS last_kbox_reset BIGINT DEFAULT 0;")
-            await conn.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS kc_rarity_mode TEXT DEFAULT NULL;")
-            await conn.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS referred_by BIGINT;")
-            await conn.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS referral_count INT DEFAULT 0;")
-            await conn.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS daily_kg_win BIGINT DEFAULT 0;")
-            await conn.execute("ALTER TABLE groups ADD COLUMN IF NOT EXISTS added_by_id BIGINT;")
-            await conn.execute("ALTER TABLE groups ADD COLUMN IF NOT EXISTS added_by_name TEXT;")
-            await conn.execute("ALTER TABLE groups ADD COLUMN IF NOT EXISTS threshold INT DEFAULT 80;")
-            await conn.execute("ALTER TABLE groups ADD COLUMN IF NOT EXISTS msg_count INT DEFAULT 0;")
-            await conn.execute("ALTER TABLE groups ADD COLUMN IF NOT EXISTS admin_warned BOOLEAN DEFAULT FALSE;")
-            await conn.execute("ALTER TABLE user_cards ADD COLUMN IF NOT EXISTS amount INT DEFAULT 1;")
-            await conn.execute("ALTER TABLE cards ADD COLUMN IF NOT EXISTS rarity TEXT;")
-            await conn.execute("ALTER TABLE cards ADD COLUMN IF NOT EXISTS collection TEXT;")
-            await conn.execute("ALTER TABLE cards ADD COLUMN IF NOT EXISTS is_locked BOOLEAN DEFAULT FALSE;")
-        except Exception:
-            pass
-
-        db_groups = await conn.fetch("SELECT chat_id, threshold FROM groups")
-        for g in db_groups:
-            if g['threshold'] is not None:
-                group_threshold[g['chat_id']] = g['threshold']
-
-        existing_cards = await conn.fetch("SELECT card_id, type FROM cards WHERE rarity IS NULL")
-        for c in existing_cards:
-            r = random.choices(["Shinsei", "Kiwami", "Kami", "Hoshi", "Ten"], weights=[1, 30, 30, 30, 30], k=1)[0]
-            await conn.execute("UPDATE cards SET rarity = $1 WHERE card_id = $2", r, c['card_id'])
-
-        collections_list = [
-            "🎞 Ope Ope No Mi [ 🩺]",
-            "🎞 Hito Hito No Mi [🌕]",
-            "🎞 Mera Mera No Mi [🔥]",
-            "🎞 Hana Hana No Mi [🌸]",
-            "🎞 Yomi Yomi No Mi [💀]",
-            "🎞 Tori Tori No Mi [🦅]",
-            "🎞 Yami Yami No Mi [🌑]"
-        ]
-        unassigned_cards = await conn.fetch("SELECT card_id FROM cards WHERE collection IS NULL")
-        for uc in unassigned_cards:
-            rand_col = random.choice(collections_list)
-            await conn.execute("UPDATE cards SET collection = $1 WHERE card_id = $2", rand_col, uc['card_id'])
-
-        thresh_row = await conn.fetchrow("SELECT value FROM settings WHERE key='default_threshold'")
-        if thresh_row:
-            global_default_threshold = int(thresh_row['value'])
-
-
 async def init_db():
-    """Initialize PostgreSQL with retries for temporary Railway/network resets."""
-    global db_pool
-
+    global db_pool, global_default_threshold
     if not DATABASE_URL:
         raise RuntimeError("DATABASE_URL is missing. Set it in Railway Variables.")
 
-    last_error = None
-    for attempt in range(1, 9):
+    # Retry transient PostgreSQL connection failures during Railway startup.
+    max_attempts = 8
+    for attempt in range(1, max_attempts + 1):
         try:
-            await _init_db_once()
-            print("✅ Database initialized successfully.")
+            if db_pool is not None:
+                await db_pool.close()
+                db_pool = None
+
+            db_pool = await asyncpg.create_pool(
+                DATABASE_URL,
+                min_size=1,
+                max_size=10,
+                timeout=30,
+                command_timeout=60,
+            )
+            async with db_pool.acquire() as conn:
+                await conn.execute("""
+                    CREATE TABLE IF NOT EXISTS users (
+                        user_id BIGINT PRIMARY KEY,
+                        name TEXT,
+                        coins BIGINT DEFAULT 1000,
+                        selected_card_id TEXT,
+                        is_card_admin BOOLEAN DEFAULT FALSE,
+                        is_card_buyer BOOLEAN DEFAULT FALSE,
+                        started_in_pm BOOLEAN DEFAULT FALSE,
+                        banned BOOLEAN DEFAULT FALSE,
+                        ban_reason TEXT,
+                        muted_until BIGINT DEFAULT 0,
+                        mute_reason TEXT,
+                        last_kdaily BIGINT DEFAULT 0,
+                        pre_count INT DEFAULT 0,
+                        last_pre_reset BIGINT DEFAULT 0,
+                        kbox_count INT DEFAULT 0,
+                        last_kbox_reset BIGINT DEFAULT 0,
+                        kc_rarity_mode TEXT DEFAULT NULL,
+                        referred_by BIGINT,
+                        referral_count INT DEFAULT 0,
+                        daily_kg_win BIGINT DEFAULT 0
+                    );
+                    CREATE TABLE IF NOT EXISTS groups (
+                        chat_id BIGINT PRIMARY KEY,
+                        title TEXT,
+                        added_by_id BIGINT,
+                        added_by_name TEXT,
+                        threshold INT DEFAULT 80,
+                        msg_count INT DEFAULT 0,
+                        admin_warned BOOLEAN DEFAULT FALSE
+                    );
+                    CREATE TABLE IF NOT EXISTS group_members (
+                        chat_id BIGINT,
+                        user_id BIGINT,
+                        PRIMARY KEY (chat_id, user_id)
+                    );
+                    CREATE TABLE IF NOT EXISTS settings (
+                        key TEXT PRIMARY KEY,
+                        value TEXT
+                    );
+                    CREATE TABLE IF NOT EXISTS cards (
+                        card_id TEXT PRIMARY KEY,
+                        name TEXT,
+                        type TEXT,
+                        file_id TEXT,
+                        rarity TEXT,
+                        collection TEXT,
+                        is_locked BOOLEAN DEFAULT FALSE
+                    );
+                    CREATE TABLE IF NOT EXISTS user_cards (
+                        user_id BIGINT,
+                        card_id TEXT,
+                        amount INT DEFAULT 1,
+                        PRIMARY KEY (user_id, card_id)
+                    );
+                    CREATE TABLE IF NOT EXISTS redeem_codes (
+                        code TEXT PRIMARY KEY,
+                        kachi BIGINT NOT NULL,
+                        max_uses INT NOT NULL,
+                        used_count INT DEFAULT 0
+                    );
+                    CREATE TABLE IF NOT EXISTS code_redemptions (
+                        code TEXT,
+                        user_id BIGINT,
+                        PRIMARY KEY (code, user_id)
+                    );
+                    CREATE INDEX IF NOT EXISTS idx_user_cards_user_id ON user_cards(user_id);
+                    CREATE INDEX IF NOT EXISTS idx_user_cards_card_id ON user_cards(card_id);
+                    CREATE INDEX IF NOT EXISTS idx_group_members_chat_user ON group_members(chat_id, user_id);
+                """)
+
+                try:
+                    await conn.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS selected_card_id TEXT;")
+                    await conn.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS is_card_admin BOOLEAN DEFAULT FALSE;")
+                    await conn.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS is_card_buyer BOOLEAN DEFAULT FALSE;")
+                    await conn.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS started_in_pm BOOLEAN DEFAULT FALSE;")
+                    await conn.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS banned BOOLEAN DEFAULT FALSE;")
+                    await conn.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS ban_reason TEXT;")
+                    await conn.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS muted_until BIGINT DEFAULT 0;")
+                    await conn.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS mute_reason TEXT;")
+                    await conn.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS last_kdaily BIGINT DEFAULT 0;")
+                    await conn.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS pre_count INT DEFAULT 0;")
+                    await conn.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS last_pre_reset BIGINT DEFAULT 0;")
+                    await conn.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS kbox_count INT DEFAULT 0;")
+                    await conn.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS last_kbox_reset BIGINT DEFAULT 0;")
+                    await conn.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS kc_rarity_mode TEXT DEFAULT NULL;")
+                    await conn.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS referred_by BIGINT;")
+                    await conn.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS referral_count INT DEFAULT 0;")
+                    await conn.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS daily_kg_win BIGINT DEFAULT 0;")
+                    await conn.execute("ALTER TABLE groups ADD COLUMN IF NOT EXISTS added_by_id BIGINT;")
+                    await conn.execute("ALTER TABLE groups ADD COLUMN IF NOT EXISTS added_by_name TEXT;")
+                    await conn.execute("ALTER TABLE groups ADD COLUMN IF NOT EXISTS threshold INT DEFAULT 80;")
+                    await conn.execute("ALTER TABLE groups ADD COLUMN IF NOT EXISTS msg_count INT DEFAULT 0;")
+                    await conn.execute("ALTER TABLE groups ADD COLUMN IF NOT EXISTS admin_warned BOOLEAN DEFAULT FALSE;")
+                    await conn.execute("ALTER TABLE user_cards ADD COLUMN IF NOT EXISTS amount INT DEFAULT 1;")
+                    await conn.execute("ALTER TABLE cards ADD COLUMN IF NOT EXISTS rarity TEXT;")
+                    await conn.execute("ALTER TABLE cards ADD COLUMN IF NOT EXISTS collection TEXT;")
+                    await conn.execute("ALTER TABLE cards ADD COLUMN IF NOT EXISTS is_locked BOOLEAN DEFAULT FALSE;")
+                except Exception:
+                    pass
+
+                db_groups = await conn.fetch("SELECT chat_id, threshold FROM groups")
+                for g in db_groups:
+                    if g['threshold'] is not None:
+                        group_threshold[g['chat_id']] = g['threshold']
+
+                existing_cards = await conn.fetch("SELECT card_id, type FROM cards WHERE rarity IS NULL")
+                for c in existing_cards:
+                    r = random.choices(["Shinsei", "Kiwami", "Kami", "Hoshi", "Ten"], weights=[1, 30, 30, 30, 30], k=1)[0]
+                    await conn.execute("UPDATE cards SET rarity = $1 WHERE card_id = $2", r, c['card_id'])
+
+                collections_list = [
+                    "🎞 Ope Ope No Mi [ 🩺]",
+                    "🎞 Hito Hito No Mi [🌕]",
+                    "🎞 Mera Mera No Mi [🔥]",
+                    "🎞 Hana Hana No Mi [🌸]",
+                    "🎞 Yomi Yomi No Mi [💀]",
+                    "🎞 Tori Tori No Mi [🦅]",
+                    "🎞 Yami Yami No Mi [🌑]"
+                ]
+                unassigned_cards = await conn.fetch("SELECT card_id FROM cards WHERE collection IS NULL")
+                for uc in unassigned_cards:
+                    rand_col = random.choice(collections_list)
+                    await conn.execute("UPDATE cards SET collection = $1 WHERE card_id = $2", rand_col, uc['card_id'])
+
+                thresh_row = await conn.fetchrow("SELECT value FROM settings WHERE key='default_threshold'")
+                if thresh_row:
+                    global_default_threshold = int(thresh_row['value'])
+
+            print("✅ PostgreSQL database initialized successfully.")
             return
         except Exception as e:
-            last_error = e
-            print(
-                f"⚠️ Database initialization attempt {attempt}/8 failed: "
-                f"{type(e).__name__}: {e}"
-            )
-
-            # Discard a partially-created or unhealthy pool before retrying.
             if db_pool is not None:
                 try:
                     await db_pool.close()
@@ -264,15 +254,18 @@ async def init_db():
                     pass
                 db_pool = None
 
-            if attempt < 8:
-                delay = min(5 * attempt, 30)
-                print(f"🔄 Retrying database connection in {delay} seconds...")
-                await asyncio.sleep(delay)
+            if attempt >= max_attempts:
+                raise RuntimeError(
+                    f"Could not initialize PostgreSQL after {max_attempts} attempts: "
+                    f"{type(e).__name__}: {e}"
+                ) from e
 
-    raise RuntimeError(
-        f"Could not initialize PostgreSQL after 8 attempts: "
-        f"{type(last_error).__name__}: {last_error}"
-    ) from last_error
+            delay = min(2 ** (attempt - 1), 30)
+            print(
+                f"⚠️ PostgreSQL connection attempt {attempt}/{max_attempts} failed: "
+                f"{type(e).__name__}: {e}. Retrying in {delay}s..."
+            )
+            await asyncio.sleep(delay)
 
 
 def get_rarity_emoji(r):
@@ -1821,7 +1814,7 @@ async def ban_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     if not context.args:
-        return await msg.reply_text("❌ Usage: `/ban [user_id] [reason]`", parse_mode="Markdown", reply_to_message_id=msg_id)
+        return await msg.reply_text("❌ Usage: `/ban [user_id] [reason]`", parse_mode="Markdown", reply_to_message_id=msg.message_id)
 
     try:
         target_id = int(context.args[0])
@@ -2493,10 +2486,10 @@ async def ttcard_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 locked_kryora_count = len(locked_kryora)
 
         await status_msg.edit_text(
-            "✅ <b>Card ownership audit completed.</b>\n\n"
-            f"👥 Users corrected: <b>{affected_users}</b>\n"
-            f"🎴 Card records corrected: <b>{affected_rows}</b>\n"
-            f"🔒 Kryora cards auto-locked: <b>{locked_kryora_count}</b>\n"
+            "✅ <b>Card ownership audit completed.</b>\\n\\n"
+            f"👥 Users corrected: <b>{affected_users}</b>\\n"
+            f"🎴 Card records corrected: <b>{affected_rows}</b>\\n"
+            f"🔒 Kryora cards auto-locked: <b>{locked_kryora_count}</b>\\n"
             "📌 No user can keep more than 3 copies of the same card.",
             parse_mode="HTML"
         )
@@ -2504,7 +2497,7 @@ async def ttcard_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         print(f"/fixcard failed for admin {user.id}: {type(e).__name__}: {e}")
         try:
             await status_msg.edit_text(
-                "❌ /fixcard failed while checking the database.\n"
+                "❌ /fixcard failed while checking the database.\\n"
                 f"<code>{type(e).__name__}: {str(e)[:700]}</code>",
                 parse_mode="HTML"
             )
